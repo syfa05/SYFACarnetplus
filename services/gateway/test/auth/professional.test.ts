@@ -65,7 +65,7 @@ describe('F-AUTH-04 — inactivité : 15 min (poste partagé), 30 min (smartphon
   });
   it('smartphone : 29 min tolérées, 31 min refusées', async () => {
     const env = await makeEnv();
-    const t = await env.signPro({ azp: 'syfa-android-pro', sid: 'ph-1' });
+    const t = await env.signPro({ azp: 'syfa-android-pro', sid: 'ph-1', phone_number: '237677000111' });
     await registerDevice(env, t);
     expect((await me(env, t, dk())).statusCode).toBe(200);
     env.clock.advance(29 * 60);
@@ -83,7 +83,7 @@ describe('F-AUTH-04 — inactivité : 15 min (poste partagé), 30 min (smartphon
   it('une session par client : le même sid sur deux types de client est indépendant', async () => {
     const env = await makeEnv();
     const web = await env.signPro({ azp: 'syfa-web', sid: 'same' });
-    const phone = await env.signPro({ azp: 'syfa-android-pro', sid: 'same' });
+    const phone = await env.signPro({ azp: 'syfa-android-pro', sid: 'same', phone_number: '237677000111' });
     await registerDevice(env, phone);
     await me(env, web);
     env.clock.advance(20 * 60); // poste partagé expiré (15), smartphone encore valide (30)
@@ -132,23 +132,56 @@ describe('appareils des professionnels (onglet 6.2)', () => {
     expect((await registerDevice(env, t, 'q'.repeat(43), 'Tablette')).statusCode).toBe(201);
     expect(env.sms.sent).toHaveLength(2);
   });
-  it('alerte en anglais selon la langue du jeton ; sans numéro : tracé, pas d\'envoi', async () => {
+  it('alerte en anglais selon la langue du jeton', async () => {
     const env = await makeEnv();
     await registerDevice(env, await env.signPro({ ...phone, locale: 'en-GB' }));
     expect(env.sms.sent[0]!.text).toMatch(/new device/);
-    const env2 = await makeEnv();
-    await registerDevice(env2, await env2.signPro({ azp: 'syfa-android-pro', sid: 'x', phone_number: undefined }));
-    expect(env2.sms.sent).toHaveLength(0);
-    expect((await env2.db.query("SELECT 1 FROM auth_event WHERE type='device_alert_no_phone'")).rows).toHaveLength(1);
   });
-  it('l\'échec de l\'alerte n\'empêche pas l\'enregistrement et ne laisse aucun message externe', async () => {
+  it('sans numéro de téléphone valide : enrôlement refusé (409), rien d\'enregistré, aucune alerte possible donc aucun appareil', async () => {
     const env = await makeEnv();
+    for (const [i, claim] of [undefined, '', '690000001', '23767700011', 'abc'].entries()) {
+      const t = await env.signPro({ azp: 'syfa-android-pro', sid: `np${i}`, phone_number: claim });
+      const r = await registerDevice(env, t);
+      expect(r.statusCode, String(claim)).toBe(409);
+      expect(r.json()).toEqual({ error: 'phone_required' });
+    }
+    expect((await env.db.query('SELECT 1 FROM auth_professional_device')).rows).toHaveLength(0);
+    expect(env.sms.sent).toHaveLength(0);
+    expect((await env.db.query("SELECT 1 FROM auth_event WHERE type='device_enrolment_refused'")).rows.length).toBeGreaterThan(0);
+  });
+  it('échec de l\'envoi de l\'alerte : enrôlement annulé (503), aucun appareil, quota intact, aucun message externe conservé', async () => {
+    const env = await makeEnv();
+    const t = await env.signPro(phone);
     env.sms.failNext = true;
-    const r = await registerDevice(env, await env.signPro(phone));
-    expect(r.statusCode).toBe(201);
+    const r = await registerDevice(env, t);
+    expect(r.statusCode).toBe(503);
+    expect(r.json()).toEqual({ error: 'alert_failed' });
+    expect((await env.db.query('SELECT 1 FROM auth_professional_device')).rows).toHaveLength(0);
+    expect((await env.get('/v1/me', t, dk())).json()).toEqual({ error: 'device_not_registered' }); // inutilisable
     const ev = JSON.stringify((await env.db.query("SELECT details FROM auth_event WHERE type='device_alert_failed'")).rows);
     expect(ev).toContain('Error:HTTP_503');
     expect(ev).not.toMatch(/Dupont/);
+    // un nouvel essai réussit, et un seul enregistrement est compté dans le quota
+    expect((await registerDevice(env, t)).statusCode).toBe(201);
+    expect(env.sms.sent).toHaveLength(1);
+    expect((await env.db.query("SELECT 1 FROM auth_rate_limit WHERE key LIKE 'device-register:%'")).rows).toHaveLength(1);
+    expect(Number((await env.db.query<{ hits: number }>("SELECT hits FROM auth_rate_limit WHERE key LIKE 'device-register:%'")).rows[0]!.hits)).toBe(1);
+  });
+  it('le réenregistrement d\'un appareil existant ne demande ni numéro ni alerte', async () => {
+    const env = await makeEnv();
+    const t = await env.signPro(phone);
+    await registerDevice(env, t);
+    // même utilisateur, jeton sans numéro, même clé : rien de nouveau
+    const sameUser = await env.signPro({ azp: 'syfa-android-pro', sid: 'again2', phone_number: undefined, sub: 'pro-1' });
+    expect((await registerDevice(env, sameUser)).statusCode).toBe(200);
+    expect(env.sms.sent).toHaveLength(1);
+  });
+  it('première alerte désactivable : le premier appareil n\'exige pas de numéro, le suivant oui', async () => {
+    const env = await makeEnv({ AUTH_ALERT_ON_FIRST_DEVICE: 'false' });
+    const t = await env.signPro({ azp: 'syfa-android-pro', sid: 'f1', phone_number: undefined });
+    expect((await registerDevice(env, t, 'a'.repeat(43))).statusCode).toBe(201);
+    expect(env.sms.sent).toHaveLength(0);
+    expect((await registerDevice(env, t, 'b'.repeat(43))).statusCode).toBe(409); // deuxième appareil : alerte obligatoire
   });
   it('révocation : l\'appareil et les sessions sont refusés ; un appareil révoqué ne se réenregistre pas', async () => {
     const env = await makeEnv();

@@ -20,5 +20,5 @@ export interface AuthRuntime {
   limiter: RateLimiter;
   network: NetworkPolicy;
   events: AuthEvents;
-  sessionsDb: Db;
+  db: Db;
 }

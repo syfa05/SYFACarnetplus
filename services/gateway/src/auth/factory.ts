@@ -36,7 +36,7 @@ export function createAuthRuntime(o: AuthRuntimeOptions): AuthRuntime {
     keycloakKey: o.keycloakKey,
     patientTokens: tokens,
     sessions,
-    sessionsDb: o.db,
+    db: o.db,
     limiter,
     events,
     network: new NetworkPolicy(o.auth.allowedNetworks),

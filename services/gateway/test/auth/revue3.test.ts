@@ -56,7 +56,7 @@ describe('R1 — l\'enrôlement d\'un appareil est réservé au réseau des éta
   });
   it('même un jeton « poste partagé » enrôle depuis le réseau, jamais depuis l\'extérieur', async () => {
     const env = await makeEnv(NETS);
-    const web = await env.signPro({ azp: 'syfa-web', sid: 'w1', sub: 'victime' });
+    const web = await env.signPro({ azp: 'syfa-web', sid: 'w1', sub: 'victime', phone_number: '237677000111' });
     expect((await enrol(env, web, key(1), OUTSIDE)).statusCode).toBe(403);
     expect((await enrol(env, web, key(1), INSIDE)).statusCode).toBe(201);
   });
@@ -145,7 +145,7 @@ describe('R5 — plafond d\'appareils et inondation d\'alertes', () => {
     const env = await makeEnv({ ...NETS, AUTH_DEVICE_MAX_ACTIVE: '1' });
     expect((await enrol(env, await phone(env), key(1))).statusCode).toBe(201);
     expect((await enrol(env, await phone(env), key(2))).statusCode).toBe(409);
-    const autre = await env.signPro({ azp: 'syfa-android-pro', sid: 'o', sub: 'autre' });
+    const autre = await env.signPro({ azp: 'syfa-android-pro', sid: 'o', sub: 'autre', phone_number: '237677000112' });
     expect((await enrol(env, autre, key(3))).statusCode).toBe(201);
     for (const bad of [{ AUTH_DEVICE_MAX_ACTIVE: '0' }, { AUTH_DEVICE_REGISTRATIONS_PER_WINDOW: 'x' }, { AUTH_DEVICE_REGISTRATION_WINDOW_SECONDS: '0' }]) expect(() => loadAuthConfig(bad)).toThrow();
     expect(loadAuthConfig({}).device).toEqual({ maxActive: 5, registrationsPerWindow: 5, registrationWindowSeconds: 3600 });

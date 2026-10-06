@@ -87,7 +87,7 @@ describe('Q4 — restriction réseau des postes partagés', () => {
   });
   it('les smartphones (une fois enrôlés), les patients et les systèmes ne sont pas concernés ; restriction désactivable ou extensible', async () => {
     const env = await makeEnv({ AUTH_ALLOWED_NETWORKS: '10.20.0.0/16' });
-    const phone = await env.signPro({ azp: 'syfa-android-pro', sid: 'p1' });
+    const phone = await env.signPro({ azp: 'syfa-android-pro', sid: 'p1', phone_number: '237677000111' });
     await inject(env, '/v1/auth/devices', '10.20.1.1', { method: 'POST', token: phone, payload: { deviceKey: 'k'.repeat(43) } }); // enrôlement : sur le réseau de l'établissement
     expect((await inject(env, '/v1/me', '203.0.113.5', { token: phone, headers: { 'x-device-key': 'k'.repeat(43) } })).statusCode).toBe(200);
     const sys = await env.signPro({ azp: 'syfa-system', sid: undefined, amr: undefined, sub: 'service-account-syfa-system' });

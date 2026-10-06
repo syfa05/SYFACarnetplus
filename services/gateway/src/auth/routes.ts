@@ -53,7 +53,7 @@ export function sessionRoutes(app: FastifyInstance, rt: AuthRuntime, config: Con
   app.post('/v1/auth/logout', async (req, reply) => {
     const p = req.principal!;
     if (p.kind === 'system') throw new AuthError('forbidden', 403);
-    await rt.sessions.revoke(rt.sessionsDb, p.sid, 'logout');
+    await rt.sessions.revoke(rt.db, p.sid, 'logout');
     return reply.code(204).send();
   });
 

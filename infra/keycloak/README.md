@@ -5,6 +5,7 @@
 > testé avec des jetons synthétiques ; **l'étape ci-dessous reste à faire et à tester** avant tout usage.
 
 ## Points de sécurité à vérifier avec un Keycloak réel (revue L2)
+0. **Chaque professionnel doit avoir un `phone_number` valide** (`2376XXXXXXXX`) : sans lui, l'enrôlement d'un appareil est refusé (409 `phone_required`) car l'alerte « nouvel appareil » ne pourrait pas partir.
 1. **`phone_number` modifiable par l'administrateur seulement** (profil utilisateur déclaratif du realm, `edit: ["admin"]`) :
    c'est le numéro qui reçoit l'alerte « nouvel appareil ». S'il était modifiable par l'utilisateur, un attaquant
    disposant du mot de passe et du TOTP y mettrait son numéro. Vérifier dans la console du compte qu'il n'est pas éditable.
