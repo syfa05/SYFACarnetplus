@@ -1,0 +1,97 @@
+# Environnement de développement SYFA Carnet+ (données fictives uniquement).
+name: syfa
+services:
+  postgres-identity:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: identity
+      POSTGRES_USER: syfa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pg_identity:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syfa -d identity"]
+      interval: 5s
+      retries: 10
+
+  postgres-fhir:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fhir
+      POSTGRES_USER: syfa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pg_fhir:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syfa -d fhir"]
+      interval: 5s
+      retries: 10
+
+  postgres-keycloak:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: syfa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pg_keycloak:/var/lib/postgresql/data]
+
+  hapi-fhir:
+    image: hapiproject/hapi:latest
+    depends_on:
+      postgres-fhir: { condition: service_healthy }
+    environment:
+      spring.datasource.url: jdbc:postgresql://postgres-fhir:5432/fhir
+      spring.datasource.username: syfa
+      spring.datasource.password: ${POSTGRES_PASSWORD}
+      spring.datasource.driverClassName: org.postgresql.Driver
+      hapi.fhir.fhir_version: R4
+    ports: ["8082:8080"]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: syfa
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes: [minio:/data]
+    ports: ["9000:9000", "9001:9001"]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    command: start-dev --http-port=8081
+    depends_on: [postgres-keycloak]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres-keycloak:5432/keycloak
+      KC_DB_USERNAME: syfa
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    ports: ["8081:8081"]
+
+  vault:
+    image: hashicorp/vault:latest
+    command: server -dev -dev-listen-address=0.0.0.0:8200
+    cap_add: [IPC_LOCK]
+    ports: ["8200:8200"]
+
+  sms-fake:
+    image: node:22-alpine
+    working_dir: /app
+    volumes: [./sms-fake:/app:ro]
+    command: node server.mjs
+    ports: ["8090:8090"]
+
+  gateway:
+    build: ../services/gateway
+    depends_on: [keycloak]
+    environment:
+      SYFA_MODE: ${SYFA_MODE:-central}
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE}
+      OIDC_JWKS_URL: http://keycloak:8081/realms/syfa/protocol/openid-connect/certs
+    ports: ["8080:8080"]
+
+volumes:
+  pg_identity:
+  pg_fhir:
+  pg_keycloak:
+  minio:
