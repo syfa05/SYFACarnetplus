@@ -22,4 +22,4 @@ Mode `central` / `local` : variable `SYFA_MODE`. Données fictives uniquement.
 
 ## Avancement des lots
 
-- **L0 — Socle** : fait (voir ci-dessus). Prochain : L1 (identité et doublons).
+- **L0 — Socle** : fait (textes en dur interdits par `make lint` ; images signées avec cosign en CI, vérifiables par `make verify-image`). Prochain : L1 (identité et doublons).

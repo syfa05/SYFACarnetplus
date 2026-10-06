@@ -2,6 +2,10 @@ name: CI
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
+
 jobs:
   gateway:
     runs-on: ubuntu-latest
@@ -10,9 +14,56 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: services/gateway/package-lock.json }
       - run: node scripts/check-i18n.mjs
+      - run: node scripts/check-hardcoded-strings.mjs
+      - run: node --test scripts/test/*.test.mjs
       - run: npm ci
         working-directory: services/gateway
       - run: npm run lint && npm run build && npm test
         working-directory: services/gateway
       - run: npm audit --omit=dev --audit-level=high
         working-directory: services/gateway
+
+  # Construction et signature (cosign « keyless », identité OIDC du workflow).
+  # Les PR de forks et les PR ne publient ni ne signent rien.
+  image:
+    needs: gateway
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/syfa-gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@v3
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: services/gateway
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+      - name: Signer l'image (par empreinte)
+        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+      - name: Vérifier la signature
+        run: |
+          cosign verify "${IMAGE}@${{ steps.build.outputs.digest }}" \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/ci\.yml@.*" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
