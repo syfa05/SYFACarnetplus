@@ -121,6 +121,7 @@ export function matchScore(q: Profile, c: Profile, p: MatchParams): number {
   if (q.nomMereNormalise && c.nomMereNormalise) {
     add(w.nomMere, nameSimilarity(q.nomMereNormalise, c.nomMereNormalise, p));
   }
+  if (!(weight > 0)) return 0;
   const score = sum / weight;
   // Sexes opposés déclarés : jamais une correspondance probable.
   return q.sexe !== c.sexe && q.sexe !== 'I' && c.sexe !== 'I' ? score * p.sexeOppose : score;

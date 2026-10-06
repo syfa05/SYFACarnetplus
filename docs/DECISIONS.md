@@ -28,3 +28,11 @@
 - Réglages du score (coefficients, paliers de date) : variables `ID_*` ; clé phonétique de moins de 2 caractères non discriminante.
 - Tests exécutables sur PGlite (défaut) ou PostgreSQL réel (`TEST_DATABASE_URL`, utilisé par la CI) ; les cas de concurrence ne tournent que sur PostgreSQL réel.
 - Reportés : 2.1 et 2.2 au lot L3 (moteur d'autorisation) / L5 (champs renvoyés, limitation de débit) ; 1.3 (rapprochement manuel des enregistrements en attente) au lot L10.
+
+### Seconde revue L1 (corrections)
+- R1 : annulation refusée tant que la synchronisation FHIR d'une fusion n'est pas `ok` (`fusion_fhir_en_cours`) ; la mise à jour finale de la fusion est conditionnelle et ne peut plus écraser un état modifié entre-temps.
+- R2 : le chiffré d'un identifiant est lié à l'`id` de sa ligne (et non au dossier) ; `listIdentifiers` relit les identifiants après fusion/annulation.
+- R3 : configuration d'identité validée (poids ≥ 0 de somme > 0, coefficients dans [0,1], entiers) ; le score ne renvoie plus `NaN`.
+- R4 : verrous dans le même ordre que `merge` (dossiers par id croissant, puis la fusion). R5 : le contrôle de synchronisation FHIR en attente porte sur les deux dossiers. R6 : seuls la classe et le code de l'erreur FHIR sont conservés, jamais son message.
+- R9 : `make reset-db` à lancer après modification d'une migration déjà appliquée en local (le Compose de développement n'exécute pas encore les migrations ; câblage au lot L3).
+- **Reportés** — R7 : `motif` et `justification` sont du texte libre en clair dans `identity_event` ; à chiffrer ou encadrer avec le journal chaîné du lot L11. R11 : rotation de la clé maître non outillée ; les index aveugles révèlent les égalités (fréquence d'un nom), compromis accepté pour permettre la recherche sur données chiffrées.

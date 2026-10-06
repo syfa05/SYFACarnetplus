@@ -30,11 +30,14 @@ describe('1.1 chiffrement des colonnes sensibles (onglet 4.2, principe 7)', () =
       nomPere: 'Fotsing', telephone: '237690123456', localite: 'Bangang', contactUrgenceNom: 'Tante Rose',
       contactUrgenceTelephone: '237677000111', niveauIdentite: 1, identifiants: [{ type: 'csu', valeur: 'CSU-0042' }, { type: 'cni', valeur: '123456789' }],
     });
+    // Les chiffrés sont comparés sous forme d'octets (et non de base64) : pas de faux positif au hasard.
+    const flat = (rows: Record<string, unknown>[]) =>
+      rows.map((r) => Object.values(r).map((v) => (typeof v === 'string' && v.startsWith('v1:') ? Buffer.from(v.slice(3), 'base64').toString('latin1') : String(v))));
     const dump = JSON.stringify([
-      (await raw.query('SELECT * FROM patient')).rows,
-      (await raw.query('SELECT * FROM patient_identifier')).rows,
+      flat((await raw.query<Record<string, unknown>>('SELECT * FROM patient')).rows),
+      flat((await raw.query<Record<string, unknown>>('SELECT * FROM patient_identifier')).rows),
     ]).toUpperCase();
-    for (const secret of ['NGOUE', 'ATANGANA', 'ELOISE', 'ÉLOÏSE', '1984', 'BAFOUSSAM', 'TCHAMBA', 'FOTSING', '690123456', 'BANGANG', 'ROSE', '677000111', 'CSU0042', '123456789']) {
+    for (const secret of ['NGOUE', 'ATANGANA', 'ELOISE', 'ÉLOÏSE', '1984-07-21', 'BAFOUSSAM', 'TCHAMBA', 'FOTSING', '690123456', 'BANGANG', 'TANTE ROSE', '677000111', 'CSU0042', '123456789']) {
       expect(dump, secret).not.toContain(secret);
     }
   });
@@ -120,7 +123,7 @@ describe('3.2 synchronisation FHIR : jamais d\'échec silencieux', () => {
     expect((await service.resolve(b.id))!.statutDossier).toBe('actif'); // base : annulée
     expect(await service.pendingFhirSyncs()).toEqual([m]);
     const row = (await raw.query<{ fhir_etat: string; fhir_operation: string; fhir_erreur: string }>('SELECT fhir_etat, fhir_operation, fhir_erreur FROM patient_merge')).rows[0]!;
-    expect(row).toEqual({ fhir_etat: 'a_reconcilier', fhir_operation: 'restore', fhir_erreur: 'fhir down' });
+    expect(row).toEqual({ fhir_etat: 'a_reconcilier', fhir_operation: 'restore', fhir_erreur: 'Error' });
     await expect(service.merge(a.id, b.id, 'x', 'trop tôt')).rejects.toMatchObject({ code: 'fusion_fhir_non_reconciliee' });
     await expect(service.reconcileFhir(m, 'ops')).rejects.toMatchObject({ code: 'fhir_reconciliation_echouee' });
     f.mode.restore = false;
@@ -240,5 +243,119 @@ describe('4.2 / 4.3 réglages du score en configuration', () => {
     await created(service, { nom: 'Eyo', prenoms: 'Ayo' });
     const m = await service.findMatches(base({ nom: 'Yao', prenoms: 'Uyo' }));
     expect(m.probable).toHaveLength(0);
+  });
+});
+
+describe('revue 2 — R1 : annulation pendant la phase FHIR', () => {
+  const gated = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const log: string[] = [];
+    const port: FhirReferenceReassigner = {
+      reassign: async () => { await gate; log.push('reassign'); return [{ r: 1 }]; },
+      restore: async (_f, _t, refs) => { log.push(`restore:${JSON.stringify(refs)}`); },
+    };
+    return { port, release, log };
+  };
+  it('refusée tant que la réaffectation FHIR n\'est pas terminée ; la fusion aboutit proprement', async () => {
+    const g = gated();
+    const { service, raw } = await makeService(g.port);
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    const merging = service.merge(a.id, b.id, 'x', 'm');
+    await vi.waitFor(async () => expect((await raw.query('SELECT 1 FROM patient_merge')).rows).toHaveLength(1));
+    const id = (await raw.query<{ id: string }>('SELECT id FROM patient_merge')).rows[0]!.id;
+    await expect(service.unmerge(id, 'x', 'trop tôt')).rejects.toMatchObject({ code: 'fusion_fhir_en_cours' });
+    g.release();
+    await merging;
+    expect(g.log).toEqual(['reassign']); // aucune restauration intempestive
+    expect((await raw.query<{ fhir_etat: string; annulee_le: unknown }>('SELECT fhir_etat, annulee_le FROM patient_merge')).rows[0]).toEqual({ fhir_etat: 'ok', annulee_le: null });
+    await service.unmerge(id, 'x', 'maintenant');
+    expect(g.log).toEqual(['reassign', 'restore:[{"r":1}]']);
+  });
+  it('refusée aussi tant qu\'une fusion est « à réconcilier »', async () => {
+    const f = flaky({ reassign: true });
+    const { service, db } = await makeService(f.port);
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    const third = await created(service, { nom: 'Tiers', dateNaissance: '1944-04-04' });
+    const orig = f.port.reassign;
+    f.port.reassign = async (...args) => { await db.query("UPDATE patient SET statut_dossier='fusionne', merged_into=$1 WHERE id=$2", [third.id, a.id]); return orig(...args); };
+    await expect(service.merge(a.id, b.id, 'x', 'm')).rejects.toMatchObject({ code: 'fusion_a_reconcilier' });
+    const [id] = await service.pendingFhirSyncs();
+    await expect(service.unmerge(id!, 'x', 'm')).rejects.toMatchObject({ code: 'fusion_fhir_en_cours' });
+  });
+  it('si l\'état change pendant la phase FHIR, rien n\'est écrasé : « à réconcilier »', async () => {
+    const f = flaky({});
+    const { service, raw } = await makeService(f.port);
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    f.port.reassign = async () => { await raw.query("UPDATE patient_merge SET annulee_le=now()"); return []; };
+    await expect(service.merge(a.id, b.id, 'x', 'm')).rejects.toMatchObject({ code: 'fusion_etat_inattendu' });
+    expect(await service.pendingFhirSyncs()).toHaveLength(1);
+  });
+});
+
+describe('revue 2 — R2 : identifiants chiffrés lisibles après fusion et annulation', () => {
+  it('relecture exacte, quel que soit le dossier qui les porte', async () => {
+    const { service } = await makeService();
+    const p = await created(service, { niveauIdentite: 1, identifiants: [{ type: 'csu', valeur: 'CSU-1' }, { type: 'acte', valeur: 'A 9' }] });
+    const q = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01', niveauIdentite: 1, identifiants: [{ type: 'cni', valeur: 'C-2' }] });
+    expect(await service.listIdentifiers(p.id)).toEqual([{ type: 'csu', valeur: 'CSU1' }, { type: 'acte', valeur: 'A9' }]);
+    const m = await service.merge(q.id, p.id, 'x', 'm');
+    expect((await service.listIdentifiers(q.id)).map((i) => i.valeur).sort()).toEqual(['A9', 'C2', 'CSU1']);
+    await service.unmerge(m, 'x', 'annulation');
+    expect((await service.listIdentifiers(p.id)).map((i) => i.valeur).sort()).toEqual(['A9', 'CSU1']);
+    expect((await service.listIdentifiers(q.id)).map((i) => i.valeur)).toEqual(['C2']);
+  });
+});
+
+describe('revue 2 — R3 : configuration absurde refusée', () => {
+  it.each([
+    [{ ID_W_NOM: '0', ID_W_PRENOMS: '0', ID_W_DOB: '0', ID_W_SEXE: '0', ID_W_MERE: '0' }, 'somme'],
+    [{ ID_W_NOM: '-1' }, 'négatif'],
+    [{ ID_SWAP_FACTOR: '1.5' }, 'entre 0 et 1'],
+    [{ ID_DOB_YEAR_ONLY: '-0.1' }, 'entre 0 et 1'],
+    [{ ID_PHONETIC_MIN_LENGTH: '1.5' }, 'entier'],
+    [{ ID_MATCH_MAX_POSSIBLE: '-2' }, 'entier'],
+  ])('%j', (env, msg) => {
+    expect(() => loadIdentityConfig(env)).toThrow(msg);
+  });
+  it('la configuration par défaut est valide', () => {
+    expect(() => loadIdentityConfig({})).not.toThrow();
+  });
+});
+
+describe('revue 2 — R4 / R5 / R6', () => {
+  it('R5 : fusion refusée si l\'un des deux dossiers a une synchronisation FHIR en attente (y compris côté conservé)', async () => {
+    const f = flaky({ restore: true });
+    const { service } = await makeService(f.port);
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    const c = await created(service, { nom: 'Tiers', dateNaissance: '1944-04-04' });
+    const m = await service.merge(a.id, b.id, 'x', 'm');
+    await expect(service.unmerge(m, 'x', 'm')).rejects.toMatchObject({ code: 'fhir_restauration_echouee' });
+    await expect(service.merge(a.id, c.id, 'x', 'conservé en attente')).rejects.toMatchObject({ code: 'fusion_fhir_non_reconciliee' });
+    await expect(service.merge(c.id, a.id, 'x', 'absorbé en attente')).rejects.toMatchObject({ code: 'fusion_fhir_non_reconciliee' });
+  });
+  it('R6 : le message de l\'erreur FHIR n\'est jamais copié dans la base identité', async () => {
+    const { service, raw } = await makeService({
+      reassign: async () => { throw Object.assign(new Error('Patient Jean Dupont, diabète, Encounter/42'), { code: 'ECONNRESET' }); },
+      restore: async () => {},
+    });
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    await expect(service.merge(a.id, b.id, 'x', 'm')).rejects.toMatchObject({ code: 'fhir_reaffectation_echouee' });
+    const dump = JSON.stringify((await raw.query('SELECT details FROM identity_event')).rows) + JSON.stringify((await raw.query('SELECT * FROM patient_merge')).rows);
+    expect(dump).not.toMatch(/Dupont|diabète|Encounter/);
+    expect(dump).toContain('Error:ECONNRESET');
+  });
+  it.skipIf(!REAL_PG)('R4 (PostgreSQL réel) : annulation et fusion concurrentes sur le même dossier → jamais d\'interblocage', async () => {
+    const { service } = await makeService();
+    for (let i = 0; i < 8; i++) {
+      const a = await created(service, { nom: `Alpha${i}`, dateNaissance: `19${40 + i}-01-01` });
+      const b = await created(service, { nom: `Beta${i}`, dateNaissance: `19${50 + i}-02-02` });
+      const c = await created(service, { nom: `Gamma${i}`, dateNaissance: `19${60 + i}-03-03` });
+      const m = await service.merge(a.id, b.id, 'x', 'm');
+      const res = await Promise.allSettled([service.unmerge(m, 'x', 'u'), service.merge(c.id, a.id, 'x', 'm2')]);
+      for (const r of res) if (r.status === 'rejected') expect((r.reason as { code?: string }).code).not.toBe('40P01');
+      // cohérence : chaque dossier se résout vers un dossier non fusionné
+      for (const p of [a, b, c]) expect((await service.resolve(p.id))!.statutDossier).not.toBe('fusionne');
+    }
   });
 });

@@ -1,6 +1,6 @@
 COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: up down test lint i18n verify-image
+.PHONY: up down reset-db test lint i18n verify-image
 .env:
 	cp .env.example .env
 
@@ -13,6 +13,11 @@ down:
 lint: i18n
 	node scripts/check-hardcoded-strings.mjs
 	cd services/gateway && npm run lint
+
+# Supprime les volumes de développement (bases identité, FHIR, Keycloak, MinIO) : à faire après toute
+# modification d'une migration déjà appliquée en local. Données fictives uniquement.
+reset-db: .env
+	$(COMPOSE) down -v
 
 test:
 	node --test scripts/test/*.test.mjs

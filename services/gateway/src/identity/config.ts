@@ -43,8 +43,26 @@ export function loadIdentityConfig(env: NodeJS.ProcessEnv = process.env): Identi
       },
     },
   };
+  validateParams(cfg);
   if (!(cfg.seuilBas > 0 && cfg.seuilBas < cfg.seuilHaut && cfg.seuilHaut <= 1)) {
     throw new Error('Seuils invalides : 0 < ID_MATCH_LOW < ID_MATCH_HIGH <= 1');
   }
   return cfg;
+}
+
+/** Une configuration absurde ne doit jamais désactiver silencieusement la détection des doublons. */
+function validateParams(cfg: IdentityConfig): void {
+  const { weights: w, date: d, ...rest } = cfg.match;
+  const bad: string[] = [];
+  for (const [k, v] of Object.entries(w)) if (!(v >= 0)) bad.push(`ID_W_* : poids négatif (${k})`);
+  if (!(Object.values(w).reduce((a, b) => a + b, 0) > 0)) bad.push('ID_W_* : la somme des poids doit être > 0');
+  const unit: Array<[string, number]> = [
+    ['ID_PHONETIC_SIMILARITY', rest.phonetique], ['ID_SWAP_FACTOR', rest.inversion],
+    ['ID_SEX_MISMATCH_FACTOR', rest.sexeOppose], ['ID_SEX_UNKNOWN_SCORE', rest.sexeIndetermine],
+    ...Object.entries(d).map(([k, v]): [string, number] => [`ID_DOB_* (${k})`, v]),
+  ];
+  for (const [name, v] of unit) if (!(v >= 0 && v <= 1)) bad.push(`${name} doit être entre 0 et 1`);
+  if (!Number.isInteger(rest.phonetiqueLongueurMin) || rest.phonetiqueLongueurMin < 0) bad.push('ID_PHONETIC_MIN_LENGTH doit être un entier >= 0');
+  if (!Number.isInteger(cfg.maxPossibles) || cfg.maxPossibles < 0) bad.push('ID_MATCH_MAX_POSSIBLE doit être un entier >= 0');
+  if (bad.length) throw new Error(`Configuration d'identité invalide : ${bad.join(' ; ')}`);
 }

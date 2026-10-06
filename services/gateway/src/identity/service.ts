@@ -55,6 +55,14 @@ const MAX_TEXT = 200;
 const MAX_IDENTIFIER = 64;
 const MAX_IDENTIFIERS = 10;
 
+/** Résumé non sensible d'une erreur externe : classe et code seulement, jamais le message (il peut citer des données). */
+export function describeFailure(e: unknown): string {
+  const name = e instanceof Error ? e.name : typeof e;
+  const code = (e as { code?: unknown } | null)?.code;
+  const raw = typeof code === 'string' ? `${name}:${code}` : name;
+  return raw.replace(/[^\w.:-]/g, '').slice(0, 80);
+}
+
 const isUniqueViolation = (e: unknown): boolean => (e as { code?: string } | null)?.code === '23505';
 
 function validate(input: PatientInput): void {
@@ -325,14 +333,19 @@ export class IdentityService {
   }
 
   private async insertIdentifier(tx: Queryable, patientId: string, i: IdentifierInput): Promise<void> {
+    // AAD lié à la ligne (et non au dossier) : la fusion change `patient_id` sans invalider le chiffré.
+    const id = randomUUID();
     await tx.query(
       'INSERT INTO patient_identifier (id, patient_id, type, valeur_chiffre, valeur_idx, created_at) VALUES ($1,$2,$3,$4,$5,$6)',
-      [
-        randomUUID(), patientId, i.type,
-        this.crypto.encrypt(normalizeIdentifier(i.valeur), `identifier:${patientId}:${i.type}`),
-        this.identIdx(i.type, i.valeur), this.now().toISOString(),
-      ],
+      [id, patientId, i.type, this.crypto.encrypt(normalizeIdentifier(i.valeur), `identifier:${id}:${i.type}`), this.identIdx(i.type, i.valeur), this.now().toISOString()],
     );
+  }
+
+  /** Identifiants (déchiffrés) rattachés à un dossier. */
+  async listIdentifiers(patientId: string, q: Queryable = this.db): Promise<IdentifierInput[]> {
+    const { rows } = await q.query<{ id: string; type: IdentifierType; valeur_chiffre: string }>(
+      'SELECT id, type, valeur_chiffre FROM patient_identifier WHERE patient_id=$1 ORDER BY created_at, id', [patientId]);
+    return rows.map((r) => ({ type: r.type, valeur: this.crypto.decrypt(r.valeur_chiffre, `identifier:${r.id}:${r.type}`) }));
   }
 
   /** Ajoute un identifiant à un dossier existant, sans toucher à l'historique (F-ID-03). Idempotent. */
@@ -394,7 +407,9 @@ export class IdentityService {
         `SELECT 1 FROM representation_link
          WHERE (id_enfant=$1 AND id_representant=$2) OR (id_enfant=$2 AND id_representant=$1) LIMIT 1`, [survivantId, absorbeId]);
       if (between.rows.length) throw new IdentityError('fusion_lien_representation_entre_dossiers');
-      const pending = await tx.query("SELECT 1 FROM patient_merge WHERE absorbe_id=$1 AND fhir_etat <> 'ok' LIMIT 1", [absorbeId]);
+      const pending = await tx.query(
+        "SELECT 1 FROM patient_merge WHERE (absorbe_id = ANY($1::uuid[]) OR survivant_id = ANY($1::uuid[])) AND fhir_etat <> 'ok' LIMIT 1",
+        [[survivantId, absorbeId]]);
       if (pending.rows.length) throw new IdentityError('fusion_fhir_non_reconciliee');
 
       const ids = await tx.query<{ id: string }>('UPDATE patient_identifier SET patient_id=$1 WHERE patient_id=$2 RETURNING id', [survivantId, absorbeId]);
@@ -421,15 +436,22 @@ export class IdentityService {
       await this.compensateFailedMerge(mergeId, acteur, cause);
       throw new IdentityError('fhir_reaffectation_echouee', { fusion: mergeId }, cause); // la base a été restaurée
     }
-    await this.db.query("UPDATE patient_merge SET references_fhir=$1::jsonb, fhir_etat='ok', fhir_operation=NULL, fhir_erreur=NULL WHERE id=$2", [JSON.stringify(refs), mergeId]);
+    const done = await this.db.query(
+      "UPDATE patient_merge SET references_fhir=$1::jsonb, fhir_etat='ok', fhir_operation=NULL, fhir_erreur=NULL WHERE id=$2 AND annulee_le IS NULL AND fhir_etat='en_attente' RETURNING id",
+      [JSON.stringify(refs), mergeId]);
+    if (!done.rows.length) {
+      // L'état a changé pendant la phase FHIR : ne rien écraser, laisser la reprise trancher.
+      await this.db.query("UPDATE patient_merge SET fhir_etat='a_reconcilier', fhir_operation='reassign' WHERE id=$1", [mergeId]);
+      throw new IdentityError('fusion_etat_inattendu', { fusion: mergeId });
+    }
     return mergeId;
   }
 
   private async compensateFailedMerge(mergeId: string, acteur: string, cause: unknown): Promise<void> {
-    const message = cause instanceof Error ? cause.message : String(cause);
+    const message = describeFailure(cause);
     try {
       await this.db.transaction(async (tx) => {
-        await this.revertDatabase(tx, mergeId, acteur, 'echec_reaffectation_fhir', 'ok', null);
+        await this.revertDatabase(tx, mergeId, acteur, 'echec_reaffectation_fhir', 'ok', null, { refuseSiFhirEnCours: false });
         await this.event(tx, 'fusion_echec_fhir', acteur, null, { fusion: mergeId, erreur: message });
       });
     } catch (e) {
@@ -444,11 +466,11 @@ export class IdentityService {
   async unmerge(mergeId: string, acteur: string, motif: string): Promise<void> {
     requireActor(acteur);
     if (!motif?.trim()) throw new IdentityError('motif_requis');
-    const m = await this.db.transaction((tx) => this.revertDatabase(tx, mergeId, acteur, motif.trim(), 'en_attente', 'restore'));
+    const m = await this.db.transaction((tx) => this.revertDatabase(tx, mergeId, acteur, motif.trim(), 'en_attente', 'restore', { refuseSiFhirEnCours: true }));
     try {
       await this.fhir.restore(m.absorbe_id, m.survivant_id, m.references_fhir);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
+      const message = describeFailure(cause);
       await this.db.query("UPDATE patient_merge SET fhir_etat='a_reconcilier', fhir_operation='restore', fhir_erreur=$1 WHERE id=$2", [message, mergeId]);
       await this.event(this.db, 'annulation_fhir_a_reconcilier', acteur, m.survivant_id, { fusion: mergeId, erreur: message });
       throw new IdentityError('fhir_restauration_echouee', { fusion: mergeId }, cause); // à reprendre : reconcileFhir
@@ -460,14 +482,22 @@ export class IdentityService {
   private async revertDatabase(
     tx: Queryable, mergeId: string, acteur: string, motif: string,
     fhirEtat: 'ok' | 'en_attente', fhirOperation: 'restore' | null,
+    options: { refuseSiFhirEnCours: boolean },
   ) {
+    // Même ordre de verrous que `merge` (dossiers par id croissant, puis la ligne de fusion) : pas d'interblocage,
+    // et le dossier conservé ne peut pas être fusionné ailleurs entre la vérification et la restitution.
+    const peek = (await tx.query<{ survivant_id: string; absorbe_id: string }>('SELECT survivant_id, absorbe_id FROM patient_merge WHERE id=$1', [mergeId])).rows[0];
+    if (!peek) throw new IdentityError('fusion_introuvable');
+    await tx.query('SELECT id FROM patient WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [[peek.survivant_id, peek.absorbe_id]]);
     const m = (await tx.query<{
-      survivant_id: string; absorbe_id: string; statut_precedent: string; annulee_le: string | null;
+      survivant_id: string; absorbe_id: string; statut_precedent: string; annulee_le: string | null; fhir_etat: string;
       deplace: { identifiants: string[]; liensEnfant: string[]; liensRepresentant: string[]; delegations: string[] };
       references_fhir: unknown[];
-    }>('SELECT * FROM patient_merge WHERE id=$1 FOR UPDATE', [mergeId])).rows[0];
-    if (!m) throw new IdentityError('fusion_introuvable');
+    }>('SELECT * FROM patient_merge WHERE id=$1 FOR UPDATE', [mergeId])).rows[0]!;
     if (m.annulee_le) throw new IdentityError('fusion_deja_annulee');
+    // Une annulation pendant la phase FHIR de la fusion (ou avant sa reprise) restaurerait des références
+    // pas encore — ou déjà à moitié — réaffectées : on attend l'état « ok ».
+    if (options.refuseSiFhirEnCours && m.fhir_etat !== 'ok') throw new IdentityError('fusion_fhir_en_cours', { fusion: mergeId });
     const surv = (await tx.query<{ statut_dossier: string }>('SELECT statut_dossier FROM patient WHERE id=$1', [m.survivant_id])).rows[0];
     if (surv?.statut_dossier === 'fusionne') throw new IdentityError('annuler_fusion_ulterieure_dabord');
     const back = (table: string, col: string, list: string[]) =>
@@ -509,7 +539,7 @@ export class IdentityService {
       }
       await this.event(this.db, 'fhir_reconcilie', acteur, m.survivant_id, { fusion: mergeId });
     } catch (cause) {
-      await this.db.query("UPDATE patient_merge SET fhir_etat='a_reconcilier', fhir_erreur=$1 WHERE id=$2", [cause instanceof Error ? cause.message : String(cause), mergeId]);
+      await this.db.query("UPDATE patient_merge SET fhir_etat='a_reconcilier', fhir_erreur=$1 WHERE id=$2", [describeFailure(cause), mergeId]);
       throw new IdentityError('fhir_reconciliation_echouee', { fusion: mergeId }, cause);
     }
   }
