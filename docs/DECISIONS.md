@@ -72,3 +72,8 @@
 - **S4 — à respecter au déploiement** : `AUTH_ALLOWED_NETWORKS` doit désigner un réseau **dédié aux postes** des établissements. Tout hôte de ce réseau (Wi-Fi invité, imprimantes, visiteurs) hérite sinon des droits d'un poste partagé ; l'adresse publique d'un NAT partagé avec d'autres activités a le même défaut.
 - **S6** : tests de la liste erronée, du proxy muet, du pair non déclaré, de la chaîne de proxys, de l'enrôlement protégé, du numéro absent/invalide, de l'échec d'envoi (annulation, quota intact) et de la première alerte désactivable. **S7** : `AuthRuntime.sessionsDb` renommé `db`.
 - **Reportés** : S5 (appareils révoqués jamais purgés, avec les purges du lot L18). Inchangés : realm Keycloak et image Docker non vérifiés.
+
+### Nettoyage après vérification (tests et modifications)
+- `services/gateway/src/auth.ts` supprimé : reliquat du lot L0 (contrôle de jeton sans second facteur ni session), plus importé par personne, et doublon d'une déclaration de type. Seul `src/auth/hook.ts` contrôle les requêtes.
+- Tests regroupés **par thème** (voir `services/gateway/test/README.md`) au lieu de par tour de revue ; les 186 tests sont strictement les mêmes (noms comparés avant/après, hors préfixe « revue N — »).
+- Corrections de mes messages précédents : la CI GitHub avait bien tourné à chaque envoi (12 exécutions vertes) et l'image Docker est construite, signée et vérifiée par la CI ; seul `make up` n'a pas été exécuté.

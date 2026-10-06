@@ -67,3 +67,22 @@ export const base = (over: Partial<PatientInput> = {}): PatientInput => ({
 /** Ligne de délégation factice (colonnes chiffrées : valeurs opaques, jamais relues par ces tests). */
 export const DELEGATION_SQL =
   "INSERT INTO companion_delegation VALUES (gen_random_uuid(), $1, 'opaque', 'opaque', now(), now() + interval '1 day', 'x')";
+
+export type Svc = Awaited<ReturnType<typeof makeService>>['service'];
+
+/** Inscrit un patient sans tenir compte des correspondances (jeu de test). */
+export const created = async (s: Svc, over: Partial<PatientInput> = {}) => {
+  const r = await s.register(base(over), 'acteur-1', { confirmNew: true, justification: 'test' });
+  if (r.outcome !== 'created') throw new Error(r.outcome);
+  return r.patient;
+};
+
+/** Port FHIR de test dont la réaffectation / restauration peut être mise en échec. */
+export const flaky = (mode: { reassign?: boolean; restore?: boolean }) => {
+  const calls: string[] = [];
+  const port: FhirReferenceReassigner = {
+    reassign: async (f, t) => { calls.push('reassign'); if (mode.reassign) throw new Error('fhir down'); return [{ ref: `Encounter/${f}->${t}` }]; },
+    restore: async () => { calls.push('restore'); if (mode.restore) throw new Error('fhir down'); },
+  };
+  return { port, calls, mode };
+};

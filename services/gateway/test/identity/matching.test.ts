@@ -1,15 +1,11 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { IdentityError } from '../../src/identity/errors.js';
+import { loadIdentityConfig } from '../../src/identity/config.js';
+import { IdentityService } from '../../src/identity/service.js';
 import { normalizeName, phoneticKey } from '../../src/identity/normalize.js';
-import { base, cleanup, DELEGATION_SQL, makeService } from './helpers.js';
+import { base, cleanup, created, DELEGATION_SQL, makeService } from './helpers.js';
 
 afterAll(cleanup);
-
-const created = async (s: Awaited<ReturnType<typeof makeService>>['service'], over = {}) => {
-  const r = await s.register(base(over), 'acteur-1', { confirmNew: true, justification: 'test' });
-  if (r.outcome !== 'created') throw new Error(r.outcome);
-  return r.patient;
-};
 
 describe('normalisation et phonétique (onglet 3.2)', () => {
   it('majuscules sans accents, forme d\'origine conservée en base', async () => {
@@ -142,64 +138,46 @@ describe('F-ID-03 ajout d\'un CSU', () => {
   });
 });
 
-describe('fusion réversible', () => {
-  const setup = async () => {
-    const calls: string[] = [];
-    const s = await makeService({
-      reassign: async (f, t) => { calls.push(`reassign ${f}->${t}`); return [{ ref: 'Encounter/1' }]; },
-      restore: async (f, t) => { calls.push(`restore ${f}->${t}`); },
-    });
-    const surv = await created(s.service, { niveauIdentite: 1, identifiants: [{ type: 'cni', valeur: 'C1' }] });
-    const abs = await created(s.service, { nom: 'Mbargua', identifiants: [{ type: 'csu', valeur: 'S1' }], niveauIdentite: 1 });
-    await s.raw.query(DELEGATION_SQL, [abs.id]);
-    return { ...s, surv, abs, calls };
-  };
-
-  it('fusionne : statut, redirection, identifiants et délégations réaffectés, FHIR réaffecté', async () => {
-    const { service, raw, surv, abs, calls } = await setup();
-    await service.merge(surv.id, abs.id, 'dir-1', 'Même personne, CNI présentée');
-    const absorbed = (await raw.query<{ statut_dossier: string; merged_into: string }>('SELECT statut_dossier, merged_into FROM patient WHERE id=$1', [abs.id])).rows[0]!;
-    expect(absorbed).toEqual({ statut_dossier: 'fusionne', merged_into: surv.id });
-    expect((await service.resolve(abs.id))!.id).toBe(surv.id);
-    expect((await service.findByIdentifier('csu', 'S1'))!.id).toBe(surv.id);
-    expect((await raw.query('SELECT 1 FROM companion_delegation WHERE id_enfant=$1', [surv.id])).rows).toHaveLength(1);
-    expect(calls).toEqual([`reassign ${abs.id}->${surv.id}`]);
-    // l'identifiant du dossier absorbé reste interdit à la création
-    const r = await service.register(base({ nom: 'Zed', prenoms: 'Y', dateNaissance: '1950-01-01', niveauIdentite: 1, identifiants: [{ type: 'csu', valeur: 'S1' }] }), 'a');
-    expect(r.outcome).toBe('existing');
-  });
-  it('annulation : tout est restitué, rien n\'est perdu', async () => {
-    const { service, raw, surv, abs, calls } = await setup();
-    const id = await service.merge(surv.id, abs.id, 'dir-1', 'erreur probable');
-    await service.unmerge(id, 'dir-1', 'Deux personnes distinctes');
-    const p = (await raw.query<{ statut_dossier: string; merged_into: string | null }>('SELECT statut_dossier, merged_into FROM patient WHERE id=$1', [abs.id])).rows[0]!;
-    expect(p).toEqual({ statut_dossier: 'actif', merged_into: null });
-    expect((await service.findByIdentifier('csu', 'S1'))!.id).toBe(abs.id);
-    expect((await service.findByIdentifier('cni', 'C1'))!.id).toBe(surv.id);
-    expect((await raw.query('SELECT 1 FROM companion_delegation WHERE id_enfant=$1', [abs.id])).rows).toHaveLength(1);
-    expect(calls).toContain(`restore ${abs.id}->${surv.id}`);
-    await expect(service.unmerge(id, 'x', 'encore')).rejects.toMatchObject({ code: 'fusion_deja_annulee' });
-    // on peut re-fusionner après annulation
-    await service.merge(surv.id, abs.id, 'dir-1', 'finalement oui');
-  });
-  it('refuse : même dossier, motif vide, dossier déjà fusionné, annulation sous fusion ultérieure', async () => {
-    const { service, surv, abs } = await setup();
-    await expect(service.merge(surv.id, surv.id, 'a', 'm')).rejects.toMatchObject({ code: 'fusion_meme_dossier' });
-    await expect(service.merge(surv.id, abs.id, 'a', ' ')).rejects.toMatchObject({ code: 'motif_requis' });
-    const m1 = await service.merge(surv.id, abs.id, 'a', 'm');
-    await expect(service.merge(surv.id, abs.id, 'a', 'm')).rejects.toMatchObject({ code: 'dossier_deja_fusionne' });
-    const third = await created(service, { nom: 'Tiers', prenoms: 'Un', dateNaissance: '1944-04-04' });
-    await service.merge(third.id, surv.id, 'a', 'chaîne');
-    expect((await service.resolve(abs.id))!.id).toBe(third.id);
-    await expect(service.unmerge(m1, 'a', 'm')).rejects.toMatchObject({ code: 'annuler_fusion_ulterieure_dabord' });
-  });
-});
-
 describe('journal des événements d\'identité', () => {
   it('est en ajout seul', async () => {
     const { service, raw } = await makeService();
     await created(service);
     await expect(raw.query('DELETE FROM identity_event')).rejects.toThrow();
     await expect(raw.query("UPDATE identity_event SET acteur='x'")).rejects.toThrow();
+  });
+});
+
+describe('4.2 / 4.3 réglages du score en configuration', () => {
+  it('les coefficients se lisent dans l\'environnement et changent le résultat', async () => {
+    const { db, crypto } = await makeService();
+    const strict = new IdentityService(db, loadIdentityConfig({ ID_SWAP_FACTOR: '0.1' }), crypto);
+    const lax = new IdentityService(db, loadIdentityConfig({}), crypto);
+    await created(lax, { nom: 'Mbarga', prenoms: 'Jean' });
+    const swapped = base({ nom: 'Jean', prenoms: 'Mbarga' });
+    expect((await lax.findMatches(swapped)).probable).toHaveLength(1);
+    expect((await strict.findMatches(swapped)).probable).toHaveLength(0);
+    expect(() => loadIdentityConfig({ ID_SWAP_FACTOR: 'abc' })).toThrow();
+  });
+  it('4.3 : des noms formés surtout de voyelles ne sont pas confondus par la seule phonétique', async () => {
+    const { service } = await makeService();
+    await created(service, { nom: 'Eyo', prenoms: 'Ayo' });
+    const m = await service.findMatches(base({ nom: 'Yao', prenoms: 'Uyo' }));
+    expect(m.probable).toHaveLength(0);
+  });
+});
+
+describe('R3 : configuration absurde refusée', () => {
+  it.each([
+    [{ ID_W_NOM: '0', ID_W_PRENOMS: '0', ID_W_DOB: '0', ID_W_SEXE: '0', ID_W_MERE: '0' }, 'somme'],
+    [{ ID_W_NOM: '-1' }, 'négatif'],
+    [{ ID_SWAP_FACTOR: '1.5' }, 'entre 0 et 1'],
+    [{ ID_DOB_YEAR_ONLY: '-0.1' }, 'entre 0 et 1'],
+    [{ ID_PHONETIC_MIN_LENGTH: '1.5' }, 'entier'],
+    [{ ID_MATCH_MAX_POSSIBLE: '-2' }, 'entier'],
+  ])('%j', (env, msg) => {
+    expect(() => loadIdentityConfig(env)).toThrow(msg);
+  });
+  it('la configuration par défaut est valide', () => {
+    expect(() => loadIdentityConfig({})).not.toThrow();
   });
 });
