@@ -336,7 +336,7 @@ export class IdentityService {
   /** Identifiants (déchiffrés) rattachés à un dossier. */
   async listIdentifiers(patientId: string, q: Queryable = this.db): Promise<IdentifierInput[]> {
     const { rows } = await q.query<{ id: string; type: IdentifierType; valeur_chiffre: string }>(
-      'SELECT id, type, valeur_chiffre FROM patient_identifier WHERE patient_id=$1 ORDER BY created_at, id', [patientId]);
+      'SELECT id, type, valeur_chiffre FROM patient_identifier WHERE patient_id=$1 ORDER BY created_at, type, valeur_idx', [patientId]); // ordre déterministe (les horodatages peuvent être égaux)
     return rows.map((r) => ({ type: r.type, valeur: this.crypto.decrypt(r.valeur_chiffre, `identifier:${r.id}:${r.type}`) }));
   }
 

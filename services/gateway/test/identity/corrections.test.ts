@@ -300,7 +300,10 @@ describe('revue 2 — R2 : identifiants chiffrés lisibles après fusion et annu
     const { service } = await makeService();
     const p = await created(service, { niveauIdentite: 1, identifiants: [{ type: 'csu', valeur: 'CSU-1' }, { type: 'acte', valeur: 'A 9' }] });
     const q = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01', niveauIdentite: 1, identifiants: [{ type: 'cni', valeur: 'C-2' }] });
-    expect(await service.listIdentifiers(p.id)).toEqual([{ type: 'csu', valeur: 'CSU1' }, { type: 'acte', valeur: 'A9' }]);
+    const key = (i: { type: string; valeur: string }) => `${i.type}:${i.valeur}`;
+    const first = await service.listIdentifiers(p.id);
+    expect(first.map(key).sort()).toEqual(['acte:A9', 'csu:CSU1']);
+    expect((await service.listIdentifiers(p.id)).map(key)).toEqual(first.map(key)); // ordre stable d'un appel à l'autre
     const m = await service.merge(q.id, p.id, 'x', 'm');
     expect((await service.listIdentifiers(q.id)).map((i) => i.valeur).sort()).toEqual(['A9', 'C2', 'CSU1']);
     await service.unmerge(m, 'x', 'annulation');
