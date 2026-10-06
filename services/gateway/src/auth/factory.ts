@@ -40,7 +40,7 @@ export function createAuthRuntime(o: AuthRuntimeOptions): AuthRuntime {
     limiter,
     events,
     network: new NetworkPolicy(o.auth.allowedNetworks),
-    devices: new ProfessionalDeviceService(o.db, o.auth, o.crypto, o.sms, o.i18n, sessions, events, now),
+    devices: new ProfessionalDeviceService(o.db, o.auth, o.crypto, o.sms, o.i18n, sessions, events, limiter, now),
     patients: new PatientAuthService(o.db, o.auth, o.crypto, o.identity, o.sms, o.i18n, tokens, sessions, limiter, events, now),
   };
 }

@@ -42,7 +42,7 @@ export function buildApp(config: Config, rt: AuthRuntime): FastifyInstance {
     const limit = rateLimitHook(rt);
     secured.addHook('onRequest', async (req, reply) => (req.url.startsWith('/v1/auth/') ? limit(req, reply) : undefined));
     secured.addHook('onRequest', authHook(config, rt));
-    sessionRoutes(secured, rt);
+    sessionRoutes(secured, rt, config);
     secured.get('/v1/me', async (req) => ({ subject: req.subject, roles: req.roles, kind: req.principal?.kind }));
   });
 

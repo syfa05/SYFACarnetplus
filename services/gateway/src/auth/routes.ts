@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { Config } from '../config.js';
 import { AuthError } from './errors.js';
+import { checkNetwork, recordNetworkDenial } from './network-guard.js';
 import type { AuthRuntime } from './runtime.js';
 
 const str = (max: number, min = 1) => ({ type: 'string', minLength: min, maxLength: max });
@@ -47,7 +49,7 @@ export function patientAuthRoutes(app: FastifyInstance, rt: AuthRuntime): void {
 }
 
 /** Routes d'authentification exigeant un jeton valide (déconnexion, appareils des professionnels). */
-export function sessionRoutes(app: FastifyInstance, rt: AuthRuntime): void {
+export function sessionRoutes(app: FastifyInstance, rt: AuthRuntime, config: Config): void {
   app.post('/v1/auth/logout', async (req, reply) => {
     const p = req.principal!;
     if (p.kind === 'system') throw new AuthError('forbidden', 403);
@@ -64,6 +66,14 @@ export function sessionRoutes(app: FastifyInstance, rt: AuthRuntime): void {
   app.post('/v1/auth/devices', { config: { skipDeviceCheck: true }, ...body({ deviceKey: str(128, 32), label: str(80) }, ['deviceKey']) },
     async (req, reply) => {
       const p = professional(req);
+      // Un appareil ne s'enrôle qu'à l'établissement (réseau autorisé), quel que soit le type de client du jeton.
+      if (rt.config.deviceEnrolmentNetworkOnly) {
+        const verdict = checkNetwork(req, config, rt);
+        if (verdict !== 'ok') {
+          await recordNetworkDenial(rt, p.sub, verdict, 'device_enrolment');
+          throw new AuthError('network_not_allowed', 403);
+        }
+      }
       const b = req.body as { deviceKey: string; label?: string };
       const r = await rt.devices.register(p.sub, b.deviceKey, b.label, p.phone, p.lang);
       return reply.code(r.created ? 201 : 200).send(r);

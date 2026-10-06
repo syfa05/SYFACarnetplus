@@ -42,7 +42,11 @@ export function parseTrustProxy(v: string | undefined): boolean | string[] {
   }
   const list = raw.split(',').map((x) => x.trim()).filter(Boolean);
   if (!list.length) throw new Error('TRUST_PROXY vide');
-  for (const c of list) parseCidr(c); // lève si invalide
+  for (const c of list) {
+    const { prefix, family } = parseCidr(c);
+    // Tout hôte de la plage peut forger X-Forwarded-For : indiquer les adresses exactes des proxys.
+    if (prefix < (family === 'ipv4' ? 24 : 64)) throw new Error(`TRUST_PROXY : ${c} est trop large ; indiquer les adresses exactes des reverse proxys (/32 ou /128)`);
+  }
   return list;
 }
 

@@ -23,7 +23,9 @@ describe('Q8 — confiance au reverse proxy (limitation de débit non contournab
     expect(() => parseTrustProxy('pas-une-adresse')).toThrow();
     expect(parseTrustProxy(undefined)).toBe(false);
     expect(parseTrustProxy('false')).toBe(false);
-    expect(parseTrustProxy('10.0.0.0/8, 192.168.1.1')).toEqual(['10.0.0.0/8', '192.168.1.1']);
+    expect(parseTrustProxy('10.0.0.1, 192.168.1.1/32, 10.0.5.0/24, fd00::1')).toEqual(['10.0.0.1', '192.168.1.1/32', '10.0.5.0/24', 'fd00::1']);
+    expect(() => parseTrustProxy('10.0.0.0/8')).toThrow(/trop large/);
+    expect(() => parseTrustProxy('fd00::/16')).toThrow(/trop large/);
     expect(() => loadConfig({ OIDC_ISSUER: 'a', OIDC_AUDIENCE: 'b', TRUST_PROXY: 'true' })).toThrow();
   });
   const refresh = (env: Env, app: Env['app'], xff: string, from = '10.0.0.1') =>
@@ -31,7 +33,7 @@ describe('Q8 — confiance au reverse proxy (limitation de débit non contournab
 
   it('avec un proxy de confiance (liste) : faire varier le début de X-Forwarded-For ne change pas le compteur', async () => {
     const env = await makeEnv({ AUTH_RATE_IP_PER_MINUTE: '3' });
-    const app = buildApp(loadConfig({ OIDC_ISSUER: ISSUER, OIDC_AUDIENCE: AUDIENCE, TRUST_PROXY: '10.0.0.0/8' }), env.rt);
+    const app = buildApp(loadConfig({ OIDC_ISSUER: ISSUER, OIDC_AUDIENCE: AUDIENCE, TRUST_PROXY: '10.0.0.1' }), env.rt);
     const codes: number[] = [];
     for (let i = 0; i < 6; i++) codes.push((await refresh(env, app, `1.1.1.${i}, 9.9.9.9`)).statusCode); // le proxy a ajouté 9.9.9.9
     expect(codes).toEqual([401, 401, 401, 429, 429, 429]);
@@ -76,17 +78,17 @@ describe('Q4 — restriction réseau des postes partagés', () => {
     const t = await web(env);
     const spoof = await inject(env, '/v1/me', '203.0.113.5', { token: t, headers: { 'x-forwarded-for': '10.20.1.1' } });
     expect(spoof.statusCode).toBe(403);
-    const proxied = buildApp(loadConfig({ OIDC_ISSUER: ISSUER, OIDC_AUDIENCE: AUDIENCE, TRUST_PROXY: '10.0.0.0/8' }), env.rt);
+    const proxied = buildApp(loadConfig({ OIDC_ISSUER: ISSUER, OIDC_AUDIENCE: AUDIENCE, TRUST_PROXY: '10.0.0.1' }), env.rt);
     // le proxy (10.0.0.1) a vu le client réel 203.0.113.5 ; l'appelant a ajouté une fausse adresse autorisée devant
     const forged = await inject(env, '/v1/me', '10.0.0.1', { token: t, app: proxied, headers: { 'x-forwarded-for': '10.20.1.1, 203.0.113.5' } });
     expect(forged.statusCode).toBe(403);
     const real = await inject(env, '/v1/me', '10.0.0.1', { token: t, app: proxied, headers: { 'x-forwarded-for': '10.20.1.1' } });
     expect(real.statusCode).toBe(200);
   });
-  it('les smartphones, les patients et les systèmes ne sont pas concernés ; restriction désactivable ou extensible', async () => {
+  it('les smartphones (une fois enrôlés), les patients et les systèmes ne sont pas concernés ; restriction désactivable ou extensible', async () => {
     const env = await makeEnv({ AUTH_ALLOWED_NETWORKS: '10.20.0.0/16' });
     const phone = await env.signPro({ azp: 'syfa-android-pro', sid: 'p1' });
-    await env.post('/v1/auth/devices', { deviceKey: 'k'.repeat(43) }, { authorization: `Bearer ${phone}` }); // enregistrement hors liste : smartphone libre
+    await inject(env, '/v1/auth/devices', '10.20.1.1', { method: 'POST', token: phone, payload: { deviceKey: 'k'.repeat(43) } }); // enrôlement : sur le réseau de l'établissement
     expect((await inject(env, '/v1/me', '203.0.113.5', { token: phone, headers: { 'x-device-key': 'k'.repeat(43) } })).statusCode).toBe(200);
     const sys = await env.signPro({ azp: 'syfa-system', sid: undefined, amr: undefined, sub: 'service-account-syfa-system' });
     expect((await inject(env, '/v1/me', '203.0.113.5', { token: sys })).statusCode).toBe(200);

@@ -35,6 +35,14 @@ export interface AuthConfig {
    */
   networkRestrictedClasses: ClientClass[];
   allowedNetworks: string[];
+  /**
+   * Enrôlement d'un appareil professionnel : réservé aux réseaux autorisés (remise de l'appareil à l'établissement).
+   * Sans cela, des identifiants et un TOTP volés permettraient d'enregistrer un appareil de n'importe où.
+   * À ne désactiver que lorsqu'un code d'enrôlement remis par l'établissement existera (lot L3).
+   */
+  deviceEnrolmentNetworkOnly: boolean;
+  /** Appareils actifs par professionnel, et nouveaux enregistrements par fenêtre (chacun déclenche un SMS d'alerte). */
+  device: { maxActive: number; registrationsPerWindow: number; registrationWindowSeconds: number };
 }
 
 export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
@@ -89,8 +97,17 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
     rateLimit: { ipLimit: int('AUTH_RATE_IP_PER_MINUTE', 30), ipWindowSeconds: int('AUTH_RATE_IP_WINDOW_SECONDS', 60) },
     networkRestrictedClasses: restricted as ClientClass[],
     allowedNetworks: list('AUTH_ALLOWED_NETWORKS', '127.0.0.0/8,::1/128'),
+    deviceEnrolmentNetworkOnly: bool('AUTH_DEVICE_ENROLMENT_NETWORK_ONLY', true),
+    device: {
+      maxActive: int('AUTH_DEVICE_MAX_ACTIVE', 5),
+      registrationsPerWindow: int('AUTH_DEVICE_REGISTRATIONS_PER_WINDOW', 5),
+      registrationWindowSeconds: int('AUTH_DEVICE_REGISTRATION_WINDOW_SECONDS', 3600),
+    },
   };
-  for (const n of cfg.allowedNetworks) parseCidr(n); // lève si invalide
+  for (const n of cfg.allowedNetworks) {
+    // « tout Internet » n'est pas une restriction : si c'est voulu, vider AUTH_NETWORK_RESTRICTED_CLASSES (et le dire).
+    if (parseCidr(n).prefix === 0) throw new Error(`AUTH_ALLOWED_NETWORKS : ${n} autorise tout le réseau ; vider AUTH_NETWORK_RESTRICTED_CLASSES si c'est voulu`);
+  }
   if (cfg.networkRestrictedClasses.length && !cfg.allowedNetworks.length) {
     throw new Error('AUTH_ALLOWED_NETWORKS ne peut pas être vide quand des clients sont restreints au réseau');
   }

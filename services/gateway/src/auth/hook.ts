@@ -1,6 +1,7 @@
 import { decodeJwt, jwtVerify } from 'jose';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Config } from '../config.js';
+import { checkNetwork, recordNetworkDenial } from './network-guard.js';
 import type { AuthRuntime } from './runtime.js';
 
 const deny = (reply: FastifyReply, error = 'unauthorized', status = 401) => reply.code(status).send({ error });
@@ -55,11 +56,12 @@ export function authHook(config: Config, rt: AuthRuntime) {
           if (!(amr.includes(cfg.mfa.amr) || (Number.isFinite(acr) && acr >= cfg.mfa.acrMin))) return deny(reply, 'mfa_required');
           // Restriction réseau (onglet 6.2) : un poste partagé n'est accepté que depuis les réseaux des établissements ;
           // sans cela, des identifiants et un TOTP volés suffiraient depuis n'importe où.
-          if (cfg.networkRestrictedClasses.includes(clientClass) && !rt.network.allows(req.ip)) {
-            if ((await rt.limiter.hit('net-denied-event', payload.sub, 1, 60)).allowed) {
-              await rt.events.record(rt.sessionsDb, 'network_denied', payload.sub, { classe: clientClass }); // adresse non conservée
+          if (cfg.networkRestrictedClasses.includes(clientClass)) {
+            const verdict = checkNetwork(req, config, rt);
+            if (verdict !== 'ok') {
+              await recordNetworkDenial(rt, payload.sub, verdict, clientClass);
+              return deny(reply, 'network_not_allowed', 403); // même réponse pour les deux motifs : rien sur la configuration
             }
-            return deny(reply, 'network_not_allowed', 403);
           }
           // F-AUTH-04 : inactivité contrôlée ici, par type de client.
           const sessionId = `kc:${payload.sid}:${azp}`;

@@ -5,6 +5,7 @@ import type { AuthConfig } from './config.js';
 import type { AuthCrypto } from './crypto.js';
 import { AuthError } from './errors.js';
 import type { AuthEvents } from './events.js';
+import type { RateLimiter } from './rate-limit.js';
 import type { SessionStore } from './sessions.js';
 import type { SmsSender, Translator } from './sms.js';
 
@@ -32,6 +33,7 @@ export class ProfessionalDeviceService {
     private readonly i18n: Translator,
     private readonly sessions: SessionStore,
     private readonly events: AuthEvents,
+    private readonly limiter: RateLimiter,
     private readonly now: () => Date,
   ) {}
 
@@ -44,17 +46,23 @@ export class ProfessionalDeviceService {
     const keyHash = this.hash(subject, deviceKey);
     const id = randomUUID();
     const result = await this.db.transaction(async (tx) => {
-      const others = Number((await tx.query<{ n: string }>("SELECT count(*) AS n FROM auth_professional_device WHERE subject=$1 AND status='active'", [subject])).rows[0]!.n);
-      const ins = await tx.query<{ id: string }>(
-        `INSERT INTO auth_professional_device (id, subject, key_hash, label, created_at, last_seen_at) VALUES ($1,$2,$3,$4,$5,$5)
-         ON CONFLICT (subject, key_hash) DO NOTHING RETURNING id`,
-        [id, subject, keyHash, label?.slice(0, 80) ?? null, this.now().toISOString()]);
-      if (!ins.rows.length) {
-        const ex = (await tx.query<{ id: string; status: string }>('SELECT id, status FROM auth_professional_device WHERE subject=$1 AND key_hash=$2', [subject, keyHash])).rows[0]!;
+      // Un seul enregistrement à la fois par professionnel : le plafond ci-dessous ne peut pas être dépassé en parallèle.
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`device:${subject}`]);
+      const ex = (await tx.query<{ id: string; status: string }>('SELECT id, status FROM auth_professional_device WHERE subject=$1 AND key_hash=$2', [subject, keyHash])).rows[0];
+      if (ex) {
         // Un appareil révoqué (perdu, volé) le reste : il faut une nouvelle clé, donc un nouvel enregistrement alerté.
         if (ex.status === 'revoked') throw new AuthError('device_revoked', 409);
-        return { id: ex.id, created: false, others };
+        return { id: ex.id, created: false, others: 0 }; // idempotent : ni nouvelle alerte ni quota consommé
       }
+      const others = Number((await tx.query<{ n: string }>("SELECT count(*) AS n FROM auth_professional_device WHERE subject=$1 AND status='active'", [subject])).rows[0]!.n);
+      if (others >= this.config.device.maxActive) throw new AuthError('device_limit_reached', 409);
+      // Chaque nouvel appareil déclenche une alerte SMS : on ne laisse jamais un appareil s'enregistrer sans alerte,
+      // ni inonder la victime (coût et harcèlement) — au-delà du quota, l'enregistrement est refusé.
+      const q = await this.limiter.hit('device-register', subject, this.config.device.registrationsPerWindow, this.config.device.registrationWindowSeconds, tx);
+      if (!q.allowed) throw new AuthError('too_many_requests', 429, { retryAfterSeconds: q.retryAfterSeconds });
+      await tx.query(
+        `INSERT INTO auth_professional_device (id, subject, key_hash, label, created_at, last_seen_at) VALUES ($1,$2,$3,$4,$5,$5)`,
+        [id, subject, keyHash, label?.slice(0, 80) ?? null, this.now().toISOString()]);
       await this.events.record(tx, 'professional_device_registered', subject, { appareil: id });
       return { id, created: true, others };
     });

@@ -17,11 +17,12 @@ export class RateLimiter {
     private readonly now: () => Date,
   ) {}
 
-  async hit(label: string, subject: string, limit: number, windowSeconds: number): Promise<RateDecision> {
+  /** `q` : connexion de la transaction en cours (évite de réclamer une seconde connexion pendant qu'on en tient une). */
+  async hit(label: string, subject: string, limit: number, windowSeconds: number, q: Queryable = this.db): Promise<RateDecision> {
     const nowS = Math.floor(this.now().getTime() / 1000);
     const windowStart = nowS - (nowS % windowSeconds);
     const key = `${label}:${this.crypto.hmac('ratelimit', subject)}`;
-    const { rows } = await this.db.query<{ hits: number }>(
+    const { rows } = await q.query<{ hits: number }>(
       `INSERT INTO auth_rate_limit (key, window_start, hits) VALUES ($1,$2,1)
        ON CONFLICT (key, window_start) DO UPDATE SET hits = auth_rate_limit.hits + 1 RETURNING hits`,
       [key, windowStart],
