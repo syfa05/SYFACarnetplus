@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Db, Queryable } from '../db/db.js';
 import type { IdentityConfig } from './config.js';
 import type { FieldCrypto } from './crypto.js';
-import { IdentityError } from './errors.js';
+import { describeFailure, IdentityError } from './errors.js';
 import { noFhirReassigner, type FhirReferenceReassigner } from './fhir-port.js';
 import { normalizeName, phoneticKey } from './normalize.js';
 import { matchScore, type Profile } from './scoring.js';
@@ -54,14 +54,6 @@ const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MAX_TEXT = 200;
 const MAX_IDENTIFIER = 64;
 const MAX_IDENTIFIERS = 10;
-
-/** Résumé non sensible d'une erreur externe : classe et code seulement, jamais le message (il peut citer des données). */
-export function describeFailure(e: unknown): string {
-  const name = e instanceof Error ? e.name : typeof e;
-  const code = (e as { code?: unknown } | null)?.code;
-  const raw = typeof code === 'string' ? `${name}:${code}` : name;
-  return raw.replace(/[^\w.:-]/g, '').slice(0, 80);
-}
 
 const isUniqueViolation = (e: unknown): boolean => (e as { code?: string } | null)?.code === '23505';
 
@@ -440,8 +432,11 @@ export class IdentityService {
       "UPDATE patient_merge SET references_fhir=$1::jsonb, fhir_etat='ok', fhir_operation=NULL, fhir_erreur=NULL WHERE id=$2 AND annulee_le IS NULL AND fhir_etat='en_attente' RETURNING id",
       [JSON.stringify(refs), mergeId]);
     if (!done.rows.length) {
-      // L'état a changé pendant la phase FHIR : ne rien écraser, laisser la reprise trancher.
-      await this.db.query("UPDATE patient_merge SET fhir_etat='a_reconcilier', fhir_operation='reassign' WHERE id=$1", [mergeId]);
+      // L'état a changé pendant la phase FHIR. Si une reprise a déjà terminé la fusion, c'est un succès ;
+      // sinon on ne touche à rien d'autre qu'un état encore « en attente » (jamais un « ok » acquis).
+      const now = (await this.db.query<{ annulee_le: unknown; fhir_etat: string }>('SELECT annulee_le, fhir_etat FROM patient_merge WHERE id=$1', [mergeId])).rows[0];
+      if (now && now.annulee_le === null && now.fhir_etat === 'ok') return mergeId;
+      await this.db.query("UPDATE patient_merge SET fhir_etat='a_reconcilier', fhir_operation='reassign' WHERE id=$1 AND fhir_etat='en_attente'", [mergeId]);
       throw new IdentityError('fusion_etat_inattendu', { fusion: mergeId });
     }
     return mergeId;

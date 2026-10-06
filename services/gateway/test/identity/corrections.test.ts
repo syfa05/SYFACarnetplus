@@ -1,4 +1,6 @@
+import { inspect } from 'node:util';
 import { afterAll, describe, expect, it, vi } from 'vitest';
+import { describeFailure } from '../../src/identity/errors.js';
 import { FieldCrypto, generateMasterKey } from '../../src/identity/crypto.js';
 import { loadIdentityConfig } from '../../src/identity/config.js';
 import { IdentityService } from '../../src/identity/service.js';
@@ -345,7 +347,7 @@ describe('revue 2 — R4 / R5 / R6', () => {
     expect(dump).not.toMatch(/Dupont|diabète|Encounter/);
     expect(dump).toContain('Error:ECONNRESET');
   });
-  it.skipIf(!REAL_PG)('R4 (PostgreSQL réel) : annulation et fusion concurrentes sur le même dossier → jamais d\'interblocage', async () => {
+  it.skipIf(!REAL_PG)('R4 (PostgreSQL réel, test de fumée ; l\'ordre des verrous est prouvé par T5) : annulation et fusion concurrentes → jamais d\'interblocage', async () => {
     const { service } = await makeService();
     for (let i = 0; i < 8; i++) {
       const a = await created(service, { nom: `Alpha${i}`, dateNaissance: `19${40 + i}-01-01` });
@@ -357,5 +359,105 @@ describe('revue 2 — R4 / R5 / R6', () => {
       // cohérence : chaque dossier se résout vers un dossier non fusionné
       for (const p of [a, b, c]) expect((await service.resolve(p.id))!.statutDossier).not.toBe('fusionne');
     }
+  });
+});
+
+describe('revue 3 — T1 : reprise concurrente d\'une fusion en cours', () => {
+  it('si une reprise termine la fusion pendant la phase FHIR, la fusion réussit et l\'état « ok » est conservé', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const { service, raw } = await makeService({
+      reassign: async () => { if (calls++ === 0) await gate; return [{ n: calls }]; },
+      restore: async () => {},
+    });
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    const merging = service.merge(a.id, b.id, 'x', 'm');
+    await vi.waitFor(async () => expect(await service.pendingFhirSyncs()).toHaveLength(1));
+    await service.reconcileFhir((await service.pendingFhirSyncs())[0]!, 'ops'); // l'exploitation reprend entre-temps
+    release();
+    await expect(merging).resolves.toEqual(expect.any(String)); // plus de faux échec
+    expect((await raw.query('SELECT fhir_etat, fhir_operation FROM patient_merge')).rows).toEqual([{ fhir_etat: 'ok', fhir_operation: null }]);
+    expect(await service.pendingFhirSyncs()).toEqual([]);
+  });
+});
+
+describe('revue 3 — T2 / T3 : aucune donnée sensible dans les erreurs', () => {
+  const PHI = 'Patient Jean Dupont, diabète, Encounter/42';
+  const leaky = (extra: object = {}) => Object.assign(new Error(PHI), extra);
+  const noPhi = (e: unknown) => {
+    expect(inspect(e, { depth: 10 })).not.toMatch(/Dupont|diabète|Encounter/);
+    expect(JSON.stringify(e, Object.getOwnPropertyNames(e as object))).not.toMatch(/Dupont|diabète|Encounter/);
+  };
+  it('échec de réaffectation, de restauration et de reprise : ni message ni cause ne portent le texte d\'origine', async () => {
+    const f = { reassign: true, restore: false };
+    const { service } = await makeService({
+      reassign: async () => { if (f.reassign) throw leaky(); return []; },
+      restore: async () => { throw leaky({ code: 'ECONNRESET' }); },
+    });
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    noPhi(await service.merge(a.id, b.id, 'x', 'm').catch((e) => e));
+    f.reassign = false;
+    const m = await service.merge(a.id, b.id, 'x', 'm');
+    const e2 = await service.unmerge(m, 'x', 'u').catch((e) => e);
+    expect(e2).toMatchObject({ code: 'fhir_restauration_echouee' });
+    noPhi(e2);
+    noPhi(await service.reconcileFhir(m, 'ops').catch((e) => e));
+  });
+  it('échec de compensation (erreur de base) : cause réduite à sa classe', async () => {
+    const f = flaky({ reassign: true });
+    const { service, db } = await makeService(f.port);
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    const third = await created(service, { nom: 'Tiers', dateNaissance: '1944-04-04' });
+    f.port.reassign = async () => { await db.query("UPDATE patient SET statut_dossier='fusionne', merged_into=$1 WHERE id=$2", [third.id, a.id]); throw leaky(); };
+    const e = await service.merge(a.id, b.id, 'x', 'm').catch((x) => x);
+    expect(e).toMatchObject({ code: 'fusion_a_reconcilier' });
+    noPhi(e);
+  });
+  it('describeFailure : classe et code au format strict seulement', () => {
+    expect(describeFailure(leaky())).toBe('Error');
+    expect(describeFailure(leaky({ code: 'ECONNRESET' }))).toBe('Error:ECONNRESET');
+    expect(describeFailure(leaky({ code: '23505' }))).toBe('Error:23505');
+    expect(describeFailure(leaky({ code: 503 }))).toBe('Error:503');
+    for (const code of ['Patient Jean Dupont', 'a'.repeat(41), '', 'x;y', -1, 1.5, 1e9, {}, null]) {
+      expect(describeFailure(leaky({ code }))).toBe('Error');
+    }
+    class Dupont_diabete extends Error {}
+    expect(describeFailure(new Dupont_diabete('x'))).toBe('Error'); // nom de classe : name vaut « Error »
+    const named = Object.assign(new Error('x'), { name: 'Patient Jean Dupont' });
+    expect(describeFailure(named)).toBe('Error');
+    expect(describeFailure('Patient Jean Dupont')).toBe('Error');
+    expect(describeFailure(undefined)).toBe('Error');
+  });
+});
+
+describe('revue 3 — T5 : ordre des verrous prouvé', () => {
+  it.skipIf(!REAL_PG)('l\'annulation verrouille les dossiers AVANT la ligne de fusion (même ordre que la fusion)', async () => {
+    const { service, db } = await makeService();
+    const a = await created(service); const b = await created(service, { nom: 'Autre', dateNaissance: '1930-01-01' });
+    const m = await service.merge(a.id, b.id, 'x', 'm');
+    // Un tiers tient le verrou du dossier conservé : l'annulation doit attendre dessus.
+    let locked!: () => void; const isLocked = new Promise<void>((r) => (locked = r));
+    let free!: () => void; const gate = new Promise<void>((r) => (free = r));
+    const holder = db.transaction(async (tx) => {
+      await tx.query('SELECT 1 FROM patient WHERE id=$1 FOR UPDATE', [a.id]);
+      locked();
+      await gate;
+    });
+    await isLocked;
+    const unmerging = service.unmerge(m, 'x', 'u');
+    await vi.waitFor(async () => {
+      const waiting = await db.query<{ n: string }>("SELECT count(*) AS n FROM pg_locks WHERE NOT granted AND locktype='transactionid'");
+      expect(Number(waiting.rows[0]!.n)).toBeGreaterThan(0); // l'annulation est bloquée sur le dossier
+    });
+    // Pendant qu'elle attend, elle ne doit détenir aucun verrou sur la ligne de fusion.
+    const probe = await db.transaction(async (tx) => {
+      try { await tx.query('SELECT 1 FROM patient_merge WHERE id=$1 FOR UPDATE NOWAIT', [m]); return 'libre'; }
+      catch (e) { return (e as { code?: string }).code ?? 'erreur'; }
+    });
+    free();
+    await holder;
+    await unmerging;
+    expect(probe).toBe('libre'); // 55P03 ici = ancien ordre (fusion verrouillée avant les dossiers)
   });
 });
