@@ -3,5 +3,7 @@
   "common.loading": "Chargement…",
   "common.error": "Une erreur est survenue",
   "mode.online": "En ligne",
-  "mode.offline": "Hors connexion"
+  "mode.offline": "Hors connexion",
+  "sms.otp": "SYFA Carnet+ : votre code de connexion est {code}. Il est valable {minutes} minutes. Ne le communiquez à personne.",
+  "sms.new_device": "SYFA Carnet+ : un nouvel appareil a été enregistré sur votre compte. Si ce n'est pas vous, contactez l'assistance."
 }

@@ -3,5 +3,7 @@
   "common.loading": "Loading…",
   "common.error": "An error occurred",
   "mode.online": "Online",
-  "mode.offline": "Offline"
+  "mode.offline": "Offline",
+  "sms.otp": "SYFA Carnet+: your sign-in code is {code}. It is valid for {minutes} minutes. Do not share it with anyone.",
+  "sms.new_device": "SYFA Carnet+: a new device was registered on your account. If this was not you, contact support."
 }

@@ -3,6 +3,10 @@ COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 .PHONY: up down reset-db test lint i18n verify-image
 .env:
 	cp .env.example .env
+	@# Secrets de DÉVELOPPEMENT uniquement, générés localement (jamais commités).
+	sed -i "s|^IDENTITY_MASTER_KEY=.*|IDENTITY_MASTER_KEY=$$(openssl rand -base64 32)|" .env
+	sed -i "s|^AUTH_SECRET_KEY=.*|AUTH_SECRET_KEY=$$(openssl rand -base64 32)|" .env
+	sed -i "s|^PATIENT_JWT_PRIVATE_KEY_B64=.*|PATIENT_JWT_PRIVATE_KEY_B64=$$(openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 | base64 | tr -d '\n')|" .env
 
 up: .env
 	$(COMPOSE) up -d --build

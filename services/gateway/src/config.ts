@@ -8,7 +8,13 @@ export interface Config {
   oidcAudience: string;
   /** URL JWKS ; par défaut déduite de l'émetteur Keycloak. */
   jwksUrl: string;
-  rateLimitPerMinute: number;
+  /** Adresse du client derrière un reverse proxy de confiance (limitation de débit par adresse). */
+  trustProxy: boolean;
+  databaseUrl?: string;
+  autoMigrate: boolean;
+  migrationsDir: string;
+  i18nDir: string;
+  smsUrl?: string;
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {
@@ -29,6 +35,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     oidcIssuer,
     oidcAudience: required(env, 'OIDC_AUDIENCE'),
     jwksUrl: env.OIDC_JWKS_URL ?? `${oidcIssuer}/protocol/openid-connect/certs`,
-    rateLimitPerMinute: Number(env.RATE_LIMIT_PER_MINUTE ?? 120),
+    trustProxy: env.TRUST_PROXY === 'true',
+    databaseUrl: env.DATABASE_URL,
+    autoMigrate: env.AUTO_MIGRATE === 'true',
+    migrationsDir: env.MIGRATIONS_DIR ?? './migrations',
+    i18nDir: env.I18N_DIR ?? '../../i18n',
+    smsUrl: env.SMS_URL,
   };
 }

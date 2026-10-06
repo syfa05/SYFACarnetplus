@@ -33,11 +33,14 @@ export async function makeDb(): Promise<Db> {
     const schema = `t_${randomUUID().replace(/-/g, '')}`;
     const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
     await admin.query(`CREATE SCHEMA ${schema}`);
-    const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 8, options: `-c search_path=${schema}` });
+    await admin.end();
+    // Connexions inactives fermées vite : une suite de centaines d'environnements ne doit pas saturer le serveur.
+    const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 6, idleTimeoutMillis: 300, options: `-c search_path=${schema}` });
     cleanups.push(async () => {
       await pool.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
-      await admin.end();
+      const drop = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1 });
+      await drop.query(`DROP SCHEMA ${schema} CASCADE`);
+      await drop.end();
     });
     const db = pgDb(pool);
     await migrate(db, MIGRATIONS);

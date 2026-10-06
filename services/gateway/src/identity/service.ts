@@ -223,6 +223,15 @@ export class IdentityService {
     return rows[0] ? this.resolve(rows[0].patient_id, q) : null;
   }
 
+  /** Dossiers actifs portant ce téléphone (connexion patient : un seul dossier = compte sans ambiguïté). */
+  async findLoginCandidates(telephone: string, q: Queryable = this.db): Promise<Patient[]> {
+    const { rows } = await q.query<Row>(
+      `SELECT ${COLS} FROM patient WHERE telephone_idx = $1 AND statut_dossier = 'actif'`,
+      [this.crypto.blindIndex('tel', telephone)],
+    );
+    return rows.map((r) => this.toPatient(r));
+  }
+
   /** Rapprochement : identifiant fort, puis score (onglet 3.3). */
   async findMatches(input: PatientInput, q: Queryable = this.db): Promise<MatchResult> {
     const strong = new Map<string, Patient>();
