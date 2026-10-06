@@ -1,3 +1,5 @@
+import { parseCidr } from './auth/network.js';
+
 // Configuration externalisée (principe 9 : aucune valeur paramétrable codée en dur).
 export type Mode = 'central' | 'local';
 
@@ -8,8 +10,11 @@ export interface Config {
   oidcAudience: string;
   /** URL JWKS ; par défaut déduite de l'émetteur Keycloak. */
   jwksUrl: string;
-  /** Adresse du client derrière un reverse proxy de confiance (limitation de débit par adresse). */
-  trustProxy: boolean;
+  /**
+   * Reverse proxys de confiance : `false` ou une liste d'adresses/CIDR. Jamais « tous » : sinon X-Forwarded-For
+   * est contrôlé par l'appelant (limitation de débit et liste blanche réseau contournées).
+   */
+  trustProxy: boolean | string[];
   databaseUrl?: string;
   autoMigrate: boolean;
   migrationsDir: string;
@@ -21,6 +26,24 @@ function required(env: NodeJS.ProcessEnv, key: string): string {
   const v = env[key];
   if (!v) throw new Error(`Variable d'environnement manquante : ${key}`);
   return v;
+}
+
+/**
+ * Reverse proxys de confiance : liste d'adresses ou de CIDR. L'adresse du client est alors la première adresse
+ * NON fiable en remontant X-Forwarded-For depuis la droite. « true » (tout croire) et un nombre de sauts sont
+ * refusés : le premier laisse l'appelant choisir son adresse, le second n'a pas le comportement attendu avec la
+ * version de Fastify utilisée (vérifié par essai : l'adresse du proxy est alors prise pour celle du client).
+ */
+export function parseTrustProxy(v: string | undefined): boolean | string[] {
+  const raw = (v ?? '').trim();
+  if (raw === '' || raw === 'false') return false;
+  if (raw === 'true' || /^\d+$/.test(raw)) {
+    throw new Error("TRUST_PROXY : indiquer la liste des adresses/CIDR des reverse proxys de confiance (ex. 10.0.0.0/8), pas « true » ni un nombre");
+  }
+  const list = raw.split(',').map((x) => x.trim()).filter(Boolean);
+  if (!list.length) throw new Error('TRUST_PROXY vide');
+  for (const c of list) parseCidr(c); // lève si invalide
+  return list;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -35,7 +58,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     oidcIssuer,
     oidcAudience: required(env, 'OIDC_AUDIENCE'),
     jwksUrl: env.OIDC_JWKS_URL ?? `${oidcIssuer}/protocol/openid-connect/certs`,
-    trustProxy: env.TRUST_PROXY === 'true',
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
     databaseUrl: env.DATABASE_URL,
     autoMigrate: env.AUTO_MIGRATE === 'true',
     migrationsDir: env.MIGRATIONS_DIR ?? './migrations',

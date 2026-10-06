@@ -95,7 +95,7 @@ export const UNLOCK = '/v1/auth/patient/unlock';
 export const REFRESH = '/v1/auth/patient/refresh';
 
 /** Parcours complet : demande de code, vérification, retourne l'enrôlement. */
-export async function enrol(env: Env, pin = '1234', phone = PHONE) {
+export async function enrol(env: Env, pin = '2580', phone = PHONE) {
   await env.post(OTP_REQUEST, { telephone: phone });
   await env.rt.patients.drain();
   const res = await env.post(OTP_VERIFY, { telephone: phone, code: env.sms.code(phone), pin });

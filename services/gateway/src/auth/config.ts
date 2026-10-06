@@ -1,9 +1,17 @@
+import { parseCidr } from './network.js';
+
 export type ClientClass = 'shared_pc' | 'smartphone' | 'patient_app';
 
 /** Règles d'authentification (onglet 1 F-AUTH-01 à 04, onglet 6) : toutes paramétrables (principe 9). */
 export interface AuthConfig {
-  otp: { length: number; ttlSeconds: number; maxAttempts: number; resendMinSeconds: number; maxPerHour: number };
-  pin: { length: number; maxAttempts: number };
+  otp: {
+    length: number; ttlSeconds: number; maxAttempts: number; resendMinSeconds: number;
+    /** Demandes de code acceptées par numéro et par fenêtre de quota (SMS réellement envoyés). */
+    maxPerHour: number;
+    maxVerifyPerHour: number;
+    quotaWindowSeconds: number;
+  };
+  pin: { length: number; maxAttempts: number; rejectWeak: boolean };
   /** Inactivité maximale par type de client. */
   idleSeconds: Record<ClientClass, number>;
   accessTokenSeconds: number;
@@ -19,7 +27,14 @@ export interface AuthConfig {
   patientAudience: string;
   revokeOtherDevicesOnEnrol: boolean;
   alertOnFirstProfessionalDevice: boolean;
-  rateLimit: { ipPerMinute: number };
+  rateLimit: { ipLimit: number; ipWindowSeconds: number };
+  /**
+   * Restriction réseau (onglet 6.2, usurpation d'un compte) : les clients de ces types (postes partagés des
+   * établissements) ne sont acceptés que depuis les réseaux autorisés. Les smartphones, mobiles par nature,
+   * sont couverts par l'enregistrement d'appareil.
+   */
+  networkRestrictedClasses: ClientClass[];
+  allowedNetworks: string[];
 }
 
 export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
@@ -42,6 +57,9 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
   const deviceRequiredClasses = list('AUTH_DEVICE_REQUIRED_CLASSES', 'smartphone');
   for (const c of deviceRequiredClasses) if (!['shared_pc', 'smartphone'].includes(c)) throw new Error(`AUTH_DEVICE_REQUIRED_CLASSES invalide : ${c}`);
 
+  const restricted = list('AUTH_NETWORK_RESTRICTED_CLASSES', 'shared_pc');
+  for (const c of restricted) if (!['shared_pc', 'smartphone'].includes(c)) throw new Error(`AUTH_NETWORK_RESTRICTED_CLASSES invalide : ${c}`);
+
   const cfg: AuthConfig = {
     otp: {
       length: int('AUTH_OTP_LENGTH', 6, 4),
@@ -49,8 +67,10 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
       maxAttempts: int('AUTH_OTP_MAX_ATTEMPTS', 3),
       resendMinSeconds: int('AUTH_OTP_RESEND_MIN_SECONDS', 60),
       maxPerHour: int('AUTH_OTP_MAX_PER_HOUR', 5),
+      maxVerifyPerHour: int('AUTH_OTP_MAX_VERIFY_PER_HOUR', 30),
+      quotaWindowSeconds: int('AUTH_OTP_QUOTA_WINDOW_SECONDS', 3600),
     },
-    pin: { length: int('AUTH_PIN_LENGTH', 4, 4), maxAttempts: int('AUTH_PIN_MAX_ATTEMPTS', 5) },
+    pin: { length: int('AUTH_PIN_LENGTH', 4, 4), maxAttempts: int('AUTH_PIN_MAX_ATTEMPTS', 5), rejectWeak: bool('AUTH_PIN_REJECT_WEAK', true) },
     idleSeconds: {
       shared_pc: int('AUTH_IDLE_SHARED_PC_SECONDS', 15 * 60),
       smartphone: int('AUTH_IDLE_SMARTPHONE_SECONDS', 30 * 60),
@@ -66,8 +86,14 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
     patientAudience: env.AUTH_PATIENT_AUDIENCE ?? 'syfa-patient',
     revokeOtherDevicesOnEnrol: bool('AUTH_REVOKE_OTHER_DEVICES_ON_ENROL', true),
     alertOnFirstProfessionalDevice: bool('AUTH_ALERT_ON_FIRST_DEVICE', true),
-    rateLimit: { ipPerMinute: int('AUTH_RATE_IP_PER_MINUTE', 30) },
+    rateLimit: { ipLimit: int('AUTH_RATE_IP_PER_MINUTE', 30), ipWindowSeconds: int('AUTH_RATE_IP_WINDOW_SECONDS', 60) },
+    networkRestrictedClasses: restricted as ClientClass[],
+    allowedNetworks: list('AUTH_ALLOWED_NETWORKS', '127.0.0.0/8,::1/128'),
   };
+  for (const n of cfg.allowedNetworks) parseCidr(n); // lève si invalide
+  if (cfg.networkRestrictedClasses.length && !cfg.allowedNetworks.length) {
+    throw new Error('AUTH_ALLOWED_NETWORKS ne peut pas être vide quand des clients sont restreints au réseau');
+  }
   if (cfg.accessTokenSeconds > cfg.idleSeconds.shared_pc) {
     throw new Error("AUTH_ACCESS_TOKEN_SECONDS ne doit pas dépasser l'inactivité d'un poste partagé");
   }

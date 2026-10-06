@@ -100,6 +100,9 @@ services:
       IDENTITY_MASTER_KEY: ${IDENTITY_MASTER_KEY}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY}
       PATIENT_JWT_PRIVATE_KEY_B64: ${PATIENT_JWT_PRIVATE_KEY_B64}
+      # Réseaux autorisés pour les postes partagés. DÉVELOPPEMENT : réseaux privés ; en production, uniquement ceux des établissements.
+      AUTH_ALLOWED_NETWORKS: ${AUTH_ALLOWED_NETWORKS:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      TRUST_PROXY: ${TRUST_PROXY:-}
     ports: ["8080:8080"]
 
 volumes:

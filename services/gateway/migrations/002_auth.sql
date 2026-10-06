@@ -3,7 +3,7 @@
 
 CREATE TABLE auth_otp (
   id          uuid PRIMARY KEY,
-  patient_id  uuid NOT NULL REFERENCES patient(id),
+  patient_id  uuid REFERENCES patient(id),  -- NULL : code « fantôme » (numéro sans compte), jamais envoyé
   phone_idx   text NOT NULL,                 -- index aveugle du téléphone (même clé que la base identité)
   code_hash   text NOT NULL,                 -- HMAC(id, code)
   created_at  timestamptz NOT NULL,

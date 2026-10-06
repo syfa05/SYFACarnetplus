@@ -5,6 +5,7 @@ import type { IdentityService } from '../identity/service.js';
 import type { AuthConfig } from './config.js';
 import { AuthCrypto } from './crypto.js';
 import { AuthError } from './errors.js';
+import { isWeakPin } from './network.js';
 import { AuthEvents } from './events.js';
 import type { RateLimiter } from './rate-limit.js';
 import type { SessionStore } from './sessions.js';
@@ -57,17 +58,15 @@ export class PatientAuthService {
     if (!PHONE.test(telephone ?? '')) throw new AuthError('validation', 400);
     // Mêmes limites pour tout numéro, connu ou non : la réponse ne dit rien sur l'existence du compte.
     // Le plafond horaire ne compte que les demandes acceptées (= SMS réellement envoyés) : un renvoi trop
-    // rapide est refusé sans entamer le quota de l'heure.
+    // rapide est refusé sans entamer le quota de la fenêtre.
     const min = await this.limiter.hit('otp-req-min', telephone, 1, this.config.otp.resendMinSeconds);
     if (!min.allowed) throw new AuthError('too_many_requests', 429, { retryAfterSeconds: min.retryAfterSeconds });
-    const hour = await this.limiter.hit('otp-req-hour', telephone, this.config.otp.maxPerHour, 3600);
-    if (!hour.allowed) throw new AuthError('too_many_requests', 429, { retryAfterSeconds: hour.retryAfterSeconds });
+    const quota = await this.limiter.hit('otp-req-quota', telephone, this.config.otp.maxPerHour, this.config.otp.quotaWindowSeconds);
+    if (!quota.allowed) throw new AuthError('too_many_requests', 429, { retryAfterSeconds: quota.retryAfterSeconds });
     const candidates = await this.identity.findLoginCandidates(telephone);
+    // Numéro sans compte univoque : on fait exactement le même travail (code « fantôme » jamais envoyé), pour que le
+    // temps de réponse et les écritures ne distinguent pas un numéro connu d'un numéro inconnu.
     const patient = candidates.length === 1 ? candidates[0]! : null;
-    if (!patient) {
-      await this.events.record(this.db, 'otp_requested_no_account', null, { raison: candidates.length ? 'ambigu' : 'inconnu' });
-      return;
-    }
     const id = randomUUID();
     const code = this.crypto.numericCode(this.config.otp.length);
     const now = this.now();
@@ -76,11 +75,12 @@ export class PatientAuthService {
       await tx.query('UPDATE auth_otp SET superseded_at=$2 WHERE phone_idx=$1 AND consumed_at IS NULL AND superseded_at IS NULL', [phoneIdx, now.toISOString()]);
       await tx.query(
         'INSERT INTO auth_otp (id, patient_id, phone_idx, code_hash, created_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6)',
-        [id, patient.id, phoneIdx, this.crypto.hmac('otp', `${id}:${code}`), now.toISOString(),
+        [id, patient?.id ?? null, phoneIdx, this.crypto.hmac('otp', `${id}:${code}`), now.toISOString(),
          new Date(now.getTime() + this.config.otp.ttlSeconds * 1000).toISOString()],
       );
-      await this.events.record(tx, 'otp_requested', patient.id);
+      await this.events.record(tx, 'otp_requested', patient?.id ?? null, { resultat: patient ? 'envoye' : 'sans_compte' });
     });
+    if (!patient) return;
     // Envoi détaché : le temps de réponse ne distingue pas un numéro connu d'un numéro inconnu.
     const text = this.i18n.t(patient.langue, 'sms.otp', { code, minutes: Math.round(this.config.otp.ttlSeconds / 60) });
     const job = this.sms.send(telephone, text).catch(async (e) => {
@@ -94,12 +94,14 @@ export class PatientAuthService {
     if (!PHONE.test(telephone ?? '') || !new RegExp(`^\\d{${this.config.otp.length}}$`).test(code ?? '') || !this.validPin(pin)) {
       throw new AuthError('validation', 400);
     }
-    const verify = await this.limiter.hit('otp-verify-hour', telephone, this.config.otp.maxPerHour * this.config.otp.maxAttempts * 2, 3600);
+    // Refusé avant tout essai : un PIN trivial ne consomme ni code ni quota.
+    if (this.config.pin.rejectWeak && isWeakPin(pin)) throw new AuthError('weak_pin', 400);
+    const verify = await this.limiter.hit('otp-verify-hour', telephone, this.config.otp.maxVerifyPerHour, this.config.otp.quotaWindowSeconds);
     if (!verify.allowed) throw new AuthError('too_many_requests', 429, { retryAfterSeconds: verify.retryAfterSeconds });
 
     const now = this.now();
     const phoneIdx = this.crypto.hmac('phone', telephone);
-    const otp = (await this.db.query<{ id: string; patient_id: string; code_hash: string; expires_at: Date }>(
+    const otp = (await this.db.query<{ id: string; patient_id: string | null; code_hash: string; expires_at: Date }>(
       `SELECT id, patient_id, code_hash, expires_at FROM auth_otp
        WHERE phone_idx=$1 AND consumed_at IS NULL AND superseded_at IS NULL ORDER BY created_at DESC LIMIT 1`, [phoneIdx])).rows[0];
     if (!otp) {
@@ -120,6 +122,7 @@ export class PatientAuthService {
       await this.events.record(this.db, n >= this.config.otp.maxAttempts ? 'otp_locked' : 'otp_failed', otp.patient_id, { essai: n });
       throw new AuthError('invalid_code', 401);
     }
+    if (!otp.patient_id) throw new AuthError('invalid_code', 401); // code « fantôme » : jamais valable
     const patient = await this.identity.resolve(otp.patient_id);
     if (!patient || patient.statutDossier !== 'actif') throw new AuthError('invalid_code', 401);
 

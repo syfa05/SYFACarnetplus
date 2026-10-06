@@ -4,6 +4,13 @@
 > (pas de démon Docker ni d'accès aux images dans l'environnement de travail). Le contrôle de la passerelle est
 > testé avec des jetons synthétiques ; **l'étape ci-dessous reste à faire et à tester** avant tout usage.
 
+## Points de sécurité à vérifier avec un Keycloak réel (revue L2)
+1. **`phone_number` modifiable par l'administrateur seulement** (profil utilisateur déclaratif du realm, `edit: ["admin"]`) :
+   c'est le numéro qui reçoit l'alerte « nouvel appareil ». S'il était modifiable par l'utilisateur, un attaquant
+   disposant du mot de passe et du TOTP y mettrait son numéro. Vérifier dans la console du compte qu'il n'est pas éditable.
+2. **Jetons « client credentials »** : la passerelle reconnaît un système par son seul `azp` (`AUTH_SYSTEM_CLIENTS`).
+   Vérifier qu'ils ne portent ni `sid` ni `amr`, et ne jamais déclarer « système » un client servant à des connexions humaines.
+
 ## Ce que fournit `syfa-realm.json`
 - Clients : `syfa-web` (poste partagé, PKCE S256, inactivité 15 min), `syfa-android-pro` (smartphone, 30 min),
   `syfa-system` (client credentials, systèmes tiers). Jeton d'accès 5 min, audience `syfa-gateway`, `phone_number`.

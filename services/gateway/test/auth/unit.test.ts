@@ -8,7 +8,7 @@ describe('configuration d\'authentification (paramétrable, principe 9)', () => 
   it('valeurs par défaut du dossier : OTP 6 chiffres / 10 min / 3 essais, PIN 4 chiffres / 5 essais, 15 et 30 min', () => {
     const c = loadAuthConfig({});
     expect(c.otp).toMatchObject({ length: 6, ttlSeconds: 600, maxAttempts: 3 });
-    expect(c.pin).toEqual({ length: 4, maxAttempts: 5 });
+    expect(c.pin).toEqual({ length: 4, maxAttempts: 5, rejectWeak: true });
     expect(c.idleSeconds).toMatchObject({ shared_pc: 900, smartphone: 1800 });
     expect(c.clientClasses).toEqual({ 'syfa-web': 'shared_pc', 'syfa-android-pro': 'smartphone' });
   });

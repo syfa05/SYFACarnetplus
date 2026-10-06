@@ -8,7 +8,7 @@ import type { Config } from './config.js';
 export function buildApp(config: Config, rt: AuthRuntime): FastifyInstance {
   const app = Fastify({
     logger: false,
-    trustProxy: config.trustProxy,
+    trustProxy: config.trustProxy, // liste d'adresses de confiance ou faux (jamais « tous »)
     // Validation stricte : champs inconnus refusés et aucune conversion de type (par défaut, Fastify les « corrige »).
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false, useDefaults: false, allErrors: false } },
   });
@@ -22,6 +22,11 @@ export function buildApp(config: Config, rt: AuthRuntime): FastifyInstance {
       return reply.code(err.status).send({ error: err.code, ...(attemptsLeft !== undefined && { attemptsLeft }), ...(retryAfterSeconds !== undefined && { retryAfterSeconds }) });
     }
     if ((err as { validation?: unknown }).validation) return reply.code(400).send({ error: 'validation' });
+    // Erreurs de requête gérées par Fastify (corps trop gros, JSON invalide, type de contenu) : code stable, jamais le message.
+    const status = (err as { statusCode?: number }).statusCode;
+    if (status === 413) return reply.code(413).send({ error: 'payload_too_large' });
+    if (status === 415) return reply.code(415).send({ error: 'unsupported_media_type' });
+    if (status && status >= 400 && status < 500) return reply.code(400).send({ error: 'validation' });
     return reply.code(500).send({ error: 'internal_error' });
   });
 

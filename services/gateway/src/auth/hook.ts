@@ -53,6 +53,14 @@ export function authHook(config: Config, rt: AuthRuntime) {
           const amr = Array.isArray(payload.amr) ? payload.amr : [];
           const acr = Number(payload.acr);
           if (!(amr.includes(cfg.mfa.amr) || (Number.isFinite(acr) && acr >= cfg.mfa.acrMin))) return deny(reply, 'mfa_required');
+          // Restriction réseau (onglet 6.2) : un poste partagé n'est accepté que depuis les réseaux des établissements ;
+          // sans cela, des identifiants et un TOTP volés suffiraient depuis n'importe où.
+          if (cfg.networkRestrictedClasses.includes(clientClass) && !rt.network.allows(req.ip)) {
+            if ((await rt.limiter.hit('net-denied-event', payload.sub, 1, 60)).allowed) {
+              await rt.events.record(rt.sessionsDb, 'network_denied', payload.sub, { classe: clientClass }); // adresse non conservée
+            }
+            return deny(reply, 'network_not_allowed', 403);
+          }
           // F-AUTH-04 : inactivité contrôlée ici, par type de client.
           const sessionId = `kc:${payload.sid}:${azp}`;
           if (!(await rt.sessions.touchOrCreate(sessionId, payload.sub, clientClass))) return deny(reply, 'session_expired');

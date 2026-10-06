@@ -3,13 +3,15 @@ import { AuthError } from './errors.js';
 import type { AuthRuntime } from './runtime.js';
 
 const str = (max: number, min = 1) => ({ type: 'string', minLength: min, maxLength: max });
+/** Corps d'authentification : quelques dizaines d'octets suffisent, 4 Ko au plus. */
+const BODY_LIMIT = 4096;
 const body = (properties: Record<string, unknown>, required: string[]) =>
-  ({ body: { type: 'object', properties, required, additionalProperties: false } });
+  ({ bodyLimit: BODY_LIMIT, schema: { body: { type: 'object', properties, required, additionalProperties: false } } });
 
 /** Limitation de débit par adresse sur TOUTES les routes d'authentification (échec = refus, jamais d'ouverture). */
 export function rateLimitHook(rt: AuthRuntime) {
   return async (req: FastifyRequest, reply: FastifyReply) => {
-    const d = await rt.limiter.hit('ip-auth', req.ip, rt.config.rateLimit.ipPerMinute, 60);
+    const d = await rt.limiter.hit('ip-auth', req.ip, rt.config.rateLimit.ipLimit, rt.config.rateLimit.ipWindowSeconds);
     if (!d.allowed) {
       reply.header('retry-after', String(d.retryAfterSeconds));
       return reply.code(429).send({ error: 'too_many_requests', retryAfterSeconds: d.retryAfterSeconds });
@@ -21,26 +23,26 @@ export function rateLimitHook(rt: AuthRuntime) {
 export function patientAuthRoutes(app: FastifyInstance, rt: AuthRuntime): void {
   app.addHook('onRequest', rateLimitHook(rt));
 
-  app.post('/v1/auth/patient/otp/request', { schema: body({ telephone: str(20) }, ['telephone']) }, async (req, reply) => {
+  app.post('/v1/auth/patient/otp/request', { ...body({ telephone: str(20) }, ['telephone']) }, async (req, reply) => {
     await rt.patients.requestOtp((req.body as { telephone: string }).telephone);
     return reply.code(202).send({ status: 'sent' }); // identique que le numéro soit connu ou non
   });
 
   app.post('/v1/auth/patient/otp/verify',
-    { schema: body({ telephone: str(20), code: str(12), pin: str(8), deviceLabel: str(80) }, ['telephone', 'code', 'pin']) },
+    { ...body({ telephone: str(20), code: str(12), pin: str(8), deviceLabel: str(80) }, ['telephone', 'code', 'pin']) },
     async (req) => {
       const b = req.body as { telephone: string; code: string; pin: string; deviceLabel?: string };
       return rt.patients.verifyOtp(b.telephone, b.code, b.pin, b.deviceLabel);
     });
 
   app.post('/v1/auth/patient/unlock',
-    { schema: body({ deviceId: str(64), deviceSecret: str(200), pin: str(8) }, ['deviceId', 'deviceSecret', 'pin']) },
+    { ...body({ deviceId: str(64), deviceSecret: str(200), pin: str(8) }, ['deviceId', 'deviceSecret', 'pin']) },
     async (req) => {
       const b = req.body as { deviceId: string; deviceSecret: string; pin: string };
       return rt.patients.unlock(b.deviceId, b.deviceSecret, b.pin);
     });
 
-  app.post('/v1/auth/patient/refresh', { schema: body({ refreshToken: str(200) }, ['refreshToken']) }, async (req) =>
+  app.post('/v1/auth/patient/refresh', { ...body({ refreshToken: str(200) }, ['refreshToken']) }, async (req) =>
     rt.patients.refresh((req.body as { refreshToken: string }).refreshToken));
 }
 
@@ -59,7 +61,7 @@ export function sessionRoutes(app: FastifyInstance, rt: AuthRuntime): void {
     return p;
   };
 
-  app.post('/v1/auth/devices', { config: { skipDeviceCheck: true }, schema: body({ deviceKey: str(128, 32), label: str(80) }, ['deviceKey']) },
+  app.post('/v1/auth/devices', { config: { skipDeviceCheck: true }, ...body({ deviceKey: str(128, 32), label: str(80) }, ['deviceKey']) },
     async (req, reply) => {
       const p = professional(req);
       const b = req.body as { deviceKey: string; label?: string };

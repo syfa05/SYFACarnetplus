@@ -4,6 +4,7 @@ import type { AuthConfig } from './config.js';
 import type { AuthCrypto } from './crypto.js';
 import { ProfessionalDeviceService } from './devices.js';
 import { AuthEvents } from './events.js';
+import { NetworkPolicy } from './network.js';
 import { PatientAuthService } from './patient.js';
 import type { KeyResolver } from './principal.js';
 import { RateLimiter } from './rate-limit.js';
@@ -37,6 +38,8 @@ export function createAuthRuntime(o: AuthRuntimeOptions): AuthRuntime {
     sessions,
     sessionsDb: o.db,
     limiter,
+    events,
+    network: new NetworkPolicy(o.auth.allowedNetworks),
     devices: new ProfessionalDeviceService(o.db, o.auth, o.crypto, o.sms, o.i18n, sessions, events, now),
     patients: new PatientAuthService(o.db, o.auth, o.crypto, o.identity, o.sms, o.i18n, tokens, sessions, limiter, events, now),
   };
