@@ -56,7 +56,8 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:latest
-    command: start-dev --http-port=8081
+    command: start-dev --http-port=8081 --import-realm
+    volumes: [./keycloak:/opt/keycloak/data/import:ro]
     depends_on: [postgres-keycloak]
     environment:
       KC_DB: postgres
@@ -81,13 +82,27 @@ services:
     ports: ["8090:8090"]
 
   gateway:
-    build: ../services/gateway
-    depends_on: [keycloak]
+    build:
+      context: ..
+      dockerfile: services/gateway/Dockerfile
+    depends_on:
+      keycloak: { condition: service_started }
+      postgres-identity: { condition: service_healthy }
+      sms-fake: { condition: service_started }
     environment:
       SYFA_MODE: ${SYFA_MODE:-central}
       OIDC_ISSUER: ${OIDC_ISSUER}
       OIDC_AUDIENCE: ${OIDC_AUDIENCE}
       OIDC_JWKS_URL: http://keycloak:8081/realms/syfa/protocol/openid-connect/certs
+      DATABASE_URL: postgres://syfa:${POSTGRES_PASSWORD}@postgres-identity:5432/identity
+      AUTO_MIGRATE: "true"
+      SMS_URL: http://sms-fake:8090
+      IDENTITY_MASTER_KEY: ${IDENTITY_MASTER_KEY}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY}
+      PATIENT_JWT_PRIVATE_KEY_B64: ${PATIENT_JWT_PRIVATE_KEY_B64}
+      # Réseaux autorisés pour les postes partagés. DÉVELOPPEMENT : réseaux privés ; en production, uniquement ceux des établissements.
+      AUTH_ALLOWED_NETWORKS: ${AUTH_ALLOWED_NETWORKS:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      TRUST_PROXY: ${TRUST_PROXY:-}
     ports: ["8080:8080"]
 
 volumes:

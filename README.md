@@ -22,4 +22,6 @@ Mode `central` / `local` : variable `SYFA_MODE`. Données fictives uniquement.
 
 ## Avancement des lots
 
-- **L0 — Socle** : fait (voir ci-dessus). Prochain : L1 (identité et doublons).
+- **L0 — Socle** : fait (textes en dur interdits par `make lint` ; images signées avec cosign en CI, vérifiables par `make verify-image`). 
+- **L1 — Identité et doublons** : fait (domaine + SQL + tests ; routes exposées au lot L3). 
+- **L2 — Authentification** : fait côté passerelle (codes SMS, PIN, sessions, appareils, limitation de débit) ; realm Keycloak à valider (voir `infra/keycloak/README.md`).
