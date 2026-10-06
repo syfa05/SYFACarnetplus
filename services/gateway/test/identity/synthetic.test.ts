@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeName, phoneticKey } from '../../src/identity/normalize.js';
+import { normalizeName } from '../../src/identity/normalize.js';
 import type { PatientInput } from '../../src/identity/types.js';
-import { makeService } from './helpers.js';
+import { afterAll } from 'vitest';
+import { cleanup, makeService } from './helpers.js';
+
+afterAll(cleanup);
 
 // Noms fictifs d'inspiration camerounaise (français, anglais, langues locales) — aucune donnée réelle.
 const NOMS = ['Mbarga','Ngono','Ndongo','Nkou','Fotso','Kamga','Njoya','Tchamba','Atangana','Essomba','Biya','Onana','Eto\'o','Mvondo','Abena','Owona','Ebanga','Manga','Tagne','Kouam','Talla','Tchoumi','Nana','Feudjio','Simo','Mbah','Fonyuy','Tabi','Ngu','Ayuk','Etta','Bessong','Nsame','Ekani','Ondoa','Zogo','Mebenga','Ateba','Nguema','Mballa','Ouedraogo','Dupont','Martin','Bello','Mohamadou','Hamadou','Abdoulaye','Yaya','Ngassa','Dongmo','Tsafack','Wafo','Kenfack','Pouemi','Nzeukou','Djomo','Youmbi','Sob','Njike','Ewane','Elonge','Lyonga','Ngoh','Mukete','Ngwa','Tanyi','Ako','Bekolo','Mintya','Assomo','Awono','Evina','Fouda','Etoundi','Messi','Ngatchou','Teguia'];
@@ -45,15 +48,10 @@ describe('10 000 identités synthétiques (taux de faux positifs, L1)', () => {
       stored.push(p);
     }
     await db.transaction(async (tx) => {
-      for (let i = 0; i < stored.length; i += 500) {
-        const chunk = stored.slice(i, i + 500);
-        const values: unknown[] = [];
-        const rows = chunk.map((p, j) => {
-          const n = normalizeName(p.nom), pr = normalizeName(p.prenoms), b = j * 9;
-          values.push(crypto.randomUUID(), p.nom, n, phoneticKey(n), p.prenoms, pr, phoneticKey(pr), p.dateNaissance, p.sexe);
-          return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8}::date,$${b+9},'Douala',3,'fr',now())`;
-        });
-        await tx.query(`INSERT INTO patient (id,nom,nom_normalise,nom_phonetique,prenoms,prenoms_normalise,prenoms_phonetique,date_naissance,sexe,lieu_naissance,niveau_identite,langue,created_at) VALUES ${rows.join(',')}`, values);
+      for (const p of stored) {
+        const row = service.patientRow(p, crypto.randomUUID());
+        const cols = Object.keys(row);
+        await tx.query(`INSERT INTO patient (${cols.join(',')}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(',')})`, cols.map((c) => row[c]));
       }
     });
 

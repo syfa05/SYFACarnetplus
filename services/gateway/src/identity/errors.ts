@@ -3,7 +3,8 @@ export class IdentityError extends Error {
   constructor(
     public readonly code: string,
     public readonly details: Record<string, unknown> = {},
+    cause?: unknown,
   ) {
-    super(code);
+    super(code, cause === undefined ? undefined : { cause });
   }
 }

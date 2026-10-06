@@ -1,4 +1,7 @@
-/** Réaffectation des références FHIR lors d'une fusion (implémentée au lot L6). */
+/**
+ * Réaffectation des références FHIR lors d'une fusion (implémentée au lot L6).
+ * Contrat : `reassign` est atomique (tout ou rien) et idempotent ; `restore` est idempotent.
+ */
 export interface FhirReferenceReassigner {
   /** Réaffecte les ressources du dossier absorbé vers le dossier conservé ; retourne de quoi annuler. */
   reassign(fromId: string, toId: string): Promise<unknown[]>;

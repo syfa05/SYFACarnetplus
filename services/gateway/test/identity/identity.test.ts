@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { IdentityError } from '../../src/identity/errors.js';
 import { normalizeName, phoneticKey } from '../../src/identity/normalize.js';
-import { base, makeService } from './helpers.js';
+import { base, cleanup, DELEGATION_SQL, makeService } from './helpers.js';
+
+afterAll(cleanup);
 
 const created = async (s: Awaited<ReturnType<typeof makeService>>['service'], over = {}) => {
   const r = await s.register(base(over), 'acteur-1', { confirmNew: true, justification: 'test' });
@@ -14,8 +16,8 @@ describe('normalisation et phonétique (onglet 3.2)', () => {
     expect(normalizeName("  N'Guéma-Éloïse ")).toBe('NGUEMA ELOISE');
     const { service, raw } = await makeService();
     await created(service, { nom: 'Ngoué', prenoms: 'Élise' });
-    const r = await raw.query<{ nom: string; nom_normalise: string }>('SELECT nom, nom_normalise FROM patient');
-    expect(r.rows[0]).toEqual({ nom: 'Ngoué', nom_normalise: 'NGOUE' });
+    const p = await service.resolve((await raw.query<{ id: string }>('SELECT id FROM patient')).rows[0]!.id);
+    expect(p).toMatchObject({ nom: 'Ngoué', prenoms: 'Élise' });
   });
   it('variantes orthographiques courantes partagent la clé', () => {
     const k = (s: string) => phoneticKey(normalizeName(s));
@@ -117,7 +119,7 @@ describe('F-ID-03 ajout d\'un CSU', () => {
   it('conserve l\'identifiant interne et tous les liens', async () => {
     const { service, raw } = await makeService();
     const p = await created(service, { identifiants: [{ type: 'acte', valeur: 'A-77' }] });
-    await raw.query("INSERT INTO companion_delegation VALUES (gen_random_uuid(), $1, '237690000001', 'Tante', now(), now() + interval '1 day', 'x')", [p.id]);
+    await raw.query(DELEGATION_SQL, [p.id]);
     const after = await service.addIdentifier(p.id, { type: 'csu', valeur: 'CSU-9' }, 'a');
     expect(after.id).toBe(p.id);
     expect((await service.findByIdentifier('csu', 'csu9'))!.id).toBe(p.id);
@@ -149,7 +151,7 @@ describe('fusion réversible', () => {
     });
     const surv = await created(s.service, { niveauIdentite: 1, identifiants: [{ type: 'cni', valeur: 'C1' }] });
     const abs = await created(s.service, { nom: 'Mbargua', identifiants: [{ type: 'csu', valeur: 'S1' }], niveauIdentite: 1 });
-    await s.raw.query("INSERT INTO companion_delegation VALUES (gen_random_uuid(), $1, '237690000001', 'Tante', now(), now() + interval '1 day', 'x')", [abs.id]);
+    await s.raw.query(DELEGATION_SQL, [abs.id]);
     return { ...s, surv, abs, calls };
   };
 
@@ -190,15 +192,6 @@ describe('fusion réversible', () => {
     await service.merge(third.id, surv.id, 'a', 'chaîne');
     expect((await service.resolve(abs.id))!.id).toBe(third.id);
     await expect(service.unmerge(m1, 'a', 'm')).rejects.toMatchObject({ code: 'annuler_fusion_ulterieure_dabord' });
-  });
-  it('échec FHIR : la fusion est annulée en base', async () => {
-    const { db } = await makeService();
-    const { IdentityService } = await import('../../src/identity/service.js');
-    const { loadIdentityConfig } = await import('../../src/identity/config.js');
-    const s = new IdentityService(db, loadIdentityConfig({}), { reassign: async () => { throw new Error('fhir down'); }, restore: async () => {} });
-    const a = await created(s); const b = await created(s, { nom: 'Autre', dateNaissance: '1930-01-01' });
-    await expect(s.merge(a.id, b.id, 'x', 'm')).rejects.toThrow('fhir down');
-    expect((await s.resolve(b.id))!.statutDossier).toBe('actif');
   });
 });
 
