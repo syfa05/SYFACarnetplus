@@ -8,6 +8,7 @@ import { AuthCrypto, generateAuthKey } from '../../src/auth/crypto.js';
 import { createAuthRuntime } from '../../src/auth/factory.js';
 import type { AuthRuntime } from '../../src/auth/runtime.js';
 import { Translator, type SmsSender } from '../../src/auth/sms.js';
+import { DirectoryError, type DirectoryPort } from '../../src/org/directory.js';
 import { loadConfig } from '../../src/config.js';
 import { loadIdentityConfig } from '../../src/identity/config.js';
 import { IdentityService } from '../../src/identity/service.js';
@@ -19,6 +20,41 @@ export { cleanup } from '../identity/helpers.js';
 export const ISSUER = 'http://kc.test/realms/syfa';
 export const AUDIENCE = 'syfa-gateway';
 export const PHONE = '237690000001';
+
+/** Annuaire simulé (Keycloak) : comptes créés désactivés, activation à part. */
+export class FakeDirectory implements DirectoryPort {
+  users = new Map<string, { username: string; phone: string; enabled: boolean }>();
+  failNext: 'create' | 'enable' | 'delete' | 'logout' | 'password' | null = null;
+  logouts: string[] = [];
+  /** Appelé au début de chaque `setEnabled` (simule une action concurrente). */
+  beforeSetEnabled?: () => Promise<void>;
+  passwords = new Map<string, string>();
+  async createUser(u: { username: string; phone: string }) {
+    if (this.failNext === 'create') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    if ([...this.users.values()].some((x) => x.username === u.username)) throw new DirectoryError('conflict');
+    const sub = `kc-${this.users.size + 1}-${u.username}`;
+    this.users.set(sub, { username: u.username, phone: u.phone, enabled: false });
+    return { sub };
+  }
+  async deleteUser(sub: string) {
+    if (this.failNext === 'delete') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    this.users.delete(sub);
+  }
+  async logout(sub: string) {
+    if (this.failNext === 'logout') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    this.logouts.push(sub);
+  }
+  async setTemporaryPassword(sub: string, password: string) {
+    if (this.failNext === 'password') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    this.passwords.set(sub, password);
+  }
+  async setEnabled(sub: string, enabled: boolean) {
+    await this.beforeSetEnabled?.();
+    if (this.failNext === 'enable') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    const u = this.users.get(sub);
+    if (u) u.enabled = enabled;
+  }
+}
 
 export class FakeSms implements SmsSender {
   sent: Array<{ to: string; text: string }> = [];
@@ -51,6 +87,7 @@ export interface Env {
   db: Awaited<ReturnType<typeof makeDb>>;
   identity: IdentityService;
   sms: FakeSms;
+  directory: FakeDirectory;
   clock: { now: Date; advance(seconds: number): void };
   authConfig: AuthConfig;
   signPro(over?: Record<string, unknown>, opts?: { alg?: string; kid?: string }): Promise<string>;
@@ -67,18 +104,19 @@ export async function makeEnv(authEnv: NodeJS.ProcessEnv = {}): Promise<Env> {
   const authConfig = loadAuthConfig({ AUTH_SYSTEM_CLIENTS: 'syfa-system', ...authEnv });
   const identity = new IdentityService(db, loadIdentityConfig({}), testCrypto(), undefined, now);
   const sms = new FakeSms();
+  const directory = new FakeDirectory();
   const kc = await generateKeyPair('RS256');
   const ec = generateKeyPairSync('ec', { namedCurve: 'P-256' });
   const rt = createAuthRuntime({
     auth: authConfig, db, identity, crypto: new AuthCrypto(generateAuthKey()), sms,
     i18n: new Translator(fileURLToPath(new URL('../../../../i18n', import.meta.url))),
-    keycloakKey: kc.publicKey, now,
+    keycloakKey: kc.publicKey, now, directory,
     patientPrivateKeyPem: ec.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   });
   const app = buildApp(loadConfig({ OIDC_ISSUER: ISSUER, OIDC_AUDIENCE: AUDIENCE }), rt);
   let n = 0;
   return {
-    app, rt, db, identity, sms, clock, authConfig,
+    app, rt, db, identity, sms, directory, clock, authConfig,
     async signPro(over = {}, opts = {}) {
       const claims = { azp: 'syfa-web', sid: 'sid-1', amr: ['pwd', 'otp'], realm_access: { roles: ['medecin'] }, ...over } as Record<string, unknown>;
       let jwt = new SignJWT(claims).setProtectedHeader({ alg: opts.alg ?? 'RS256' })

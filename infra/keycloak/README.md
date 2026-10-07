@@ -67,3 +67,11 @@ Un flux `syfa-browser` déjà présent mais **non conforme** n'est pas « répar
 
 ## 7. Contrôles automatiques
 `make test` et la CI exécutent `scripts/test/realm.test.mjs` (politique des attributs, `phone_number`, clients, TOTP, absence de flux déclarés, version épinglée), `scripts/test/keycloak-stepup.test.mjs` (script de configuration contre le Keycloak simulé) et `scripts/test/kc-login.test.mjs` (PKCE, échange du code, résultat attendu de la passerelle). Ils évitent de réintroduire les erreurs connues ; **ils ne remplacent pas la vérification du §4**.
+
+## 8. Annuaire du personnel (lot L3) — non vérifié
+La passerelle crée et désactive les comptes du personnel par l'API d'administration. Elle exige un client « compte de service » (hors du realm importé) :
+1. Console → realm `syfa` → Clients → créer `syfa-directory`, authentification du client activée, « Service accounts roles » activé, flux standard / implicite / direct désactivés.
+2. Onglet « Service account roles » : ajouter le rôle `manage-users` (et `view-users`) du client `realm-management`.
+3. Renseigner `DIRECTORY_CLIENT_ID=syfa-directory` et `DIRECTORY_CLIENT_SECRET` (onglet Credentials) pour la passerelle.
+4. Premier opérateur : créer le compte dans Keycloak (rôle métier `operateur`, `phone_number`), puis `npm run bootstrap-operator -- <sub>` (le `sub` est l'identifiant du compte).
+5. Vérifier : créer un directeur par l'API, se connecter avec le mot de passe temporaire, constater que `phone_number` est conservé après une désactivation / réactivation.

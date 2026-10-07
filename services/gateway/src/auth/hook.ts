@@ -54,6 +54,11 @@ export function authHook(config: Config, rt: AuthRuntime) {
           const amr = Array.isArray(payload.amr) ? payload.amr : [];
           const acr = Number(payload.acr);
           if (!(amr.includes(cfg.mfa.amr) || (Number.isFinite(acr) && acr >= cfg.mfa.acrMin))) return deny(reply, 'mfa_required');
+          // Fiche du personnel (droits et établissement : source de vérité locale). Un compte désactivé est refusé
+          // immédiatement, même avec un jeton encore valide ; sans fiche, le compte s'authentifie mais n'a aucun droit.
+          const staff = await rt.staff.bySub(payload.sub);
+          if (staff?.status === 'disabled') return deny(reply, 'account_disabled');
+          req.staff = staff;
           // Restriction réseau (onglet 6.2) : un poste partagé n'est accepté que depuis les réseaux des établissements ;
           // sans cela, des identifiants et un TOTP volés suffiraient depuis n'importe où.
           if (cfg.networkRestrictedClasses.includes(clientClass)) {

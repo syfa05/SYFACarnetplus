@@ -4,10 +4,10 @@ import { AuthError } from './errors.js';
 import { checkNetwork, recordNetworkDenial } from './network-guard.js';
 import type { AuthRuntime } from './runtime.js';
 
-const str = (max: number, min = 1) => ({ type: 'string', minLength: min, maxLength: max });
+export const str = (max: number, min = 1) => ({ type: 'string', minLength: min, maxLength: max });
 /** Corps d'authentification : quelques dizaines d'octets suffisent, 4 Ko au plus. */
 const BODY_LIMIT = 4096;
-const body = (properties: Record<string, unknown>, required: string[]) =>
+export const body = (properties: Record<string, unknown>, required: string[]) =>
   ({ bodyLimit: BODY_LIMIT, schema: { body: { type: 'object', properties, required, additionalProperties: false } } });
 
 /** Limitation de débit par adresse sur TOUTES les routes d'authentification (échec = refus, jamais d'ouverture). */

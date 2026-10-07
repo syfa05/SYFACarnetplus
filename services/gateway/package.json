@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
+    "bootstrap-operator": "node dist/bootstrap-operator.js",
     "dev": "tsx watch src/main.ts",
     "test": "vitest run",
     "lint": "tsc --noEmit -p tsconfig.json"

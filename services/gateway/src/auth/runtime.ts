@@ -8,6 +8,9 @@ import type { Db } from '../db/db.js';
 import type { NetworkPolicy } from './network.js';
 import type { PatientTokens } from './tokens.js';
 import type { KeyResolver } from './principal.js';
+import type { AccessGuard } from '../authz/guard.js';
+import type { OrgService } from '../org/service.js';
+import type { StaffRepository } from '../org/repository.js';
 
 /** Tout ce dont la passerelle a besoin pour authentifier une requête. */
 export interface AuthRuntime {
@@ -21,4 +24,7 @@ export interface AuthRuntime {
   network: NetworkPolicy;
   events: AuthEvents;
   db: Db;
+  staff: StaffRepository;
+  org: OrgService;
+  access: AccessGuard;
 }
