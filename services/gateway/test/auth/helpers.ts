@@ -24,7 +24,11 @@ export const PHONE = '237690000001';
 /** Annuaire simulé (Keycloak) : comptes créés désactivés, activation à part. */
 export class FakeDirectory implements DirectoryPort {
   users = new Map<string, { username: string; phone: string; enabled: boolean }>();
-  failNext: 'create' | 'enable' | null = null;
+  failNext: 'create' | 'enable' | 'delete' | 'logout' | 'password' | null = null;
+  logouts: string[] = [];
+  /** Appelé au début de chaque `setEnabled` (simule une action concurrente). */
+  beforeSetEnabled?: () => Promise<void>;
+  passwords = new Map<string, string>();
   async createUser(u: { username: string; phone: string }) {
     if (this.failNext === 'create') { this.failNext = null; throw new DirectoryError('unavailable'); }
     if ([...this.users.values()].some((x) => x.username === u.username)) throw new DirectoryError('conflict');
@@ -32,7 +36,20 @@ export class FakeDirectory implements DirectoryPort {
     this.users.set(sub, { username: u.username, phone: u.phone, enabled: false });
     return { sub };
   }
+  async deleteUser(sub: string) {
+    if (this.failNext === 'delete') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    this.users.delete(sub);
+  }
+  async logout(sub: string) {
+    if (this.failNext === 'logout') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    this.logouts.push(sub);
+  }
+  async setTemporaryPassword(sub: string, password: string) {
+    if (this.failNext === 'password') { this.failNext = null; throw new DirectoryError('unavailable'); }
+    this.passwords.set(sub, password);
+  }
   async setEnabled(sub: string, enabled: boolean) {
+    await this.beforeSetEnabled?.();
     if (this.failNext === 'enable') { this.failNext = null; throw new DirectoryError('unavailable'); }
     const u = this.users.get(sub);
     if (u) u.enabled = enabled;

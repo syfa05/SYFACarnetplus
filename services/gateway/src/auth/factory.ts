@@ -1,4 +1,6 @@
 import { AccessGuard } from '../authz/guard.js';
+import { DenialLog } from '../authz/denial.js';
+import type { OrgConfig } from '../org/config.js';
 import type { EngineConfig } from '../authz/types.js';
 import type { Db } from '../db/db.js';
 import type { DirectoryPort } from '../org/directory.js';
@@ -29,6 +31,8 @@ export interface AuthRuntimeOptions {
   patientPrivateKeyPem: string;
   directory: DirectoryPort;
   engine?: EngineConfig;
+  /** Réglages de l'organisation ; valeurs par défaut sinon. */
+  org?: Pick<OrgConfig, 'minNetworkPrefix' | 'denialLog'>;
   /** Clients « système » homologués (export FHIR, onglet 2.5). */
   homologatedClients?: string[];
   now?: () => Date;
@@ -41,6 +45,8 @@ export function createAuthRuntime(o: AuthRuntimeOptions): AuthRuntime {
   const limiter = new RateLimiter(o.db, o.crypto, now);
   const tokens = PatientTokens.fromPem(o.auth, o.patientPrivateKeyPem, now);
   const staff = new StaffRepository(o.db);
+  const orgCfg = o.org ?? { minNetworkPrefix: { v4: 8, v6: 32 }, denialLog: { perWindow: 5, windowSeconds: 60 } };
+  const denials = new DenialLog(o.db, limiter, now, orgCfg.denialLog);
   return {
     config: o.auth,
     keycloakKey: o.keycloakKey,
@@ -48,8 +54,8 @@ export function createAuthRuntime(o: AuthRuntimeOptions): AuthRuntime {
     sessions,
     db: o.db,
     staff,
-    org: new OrgService(o.db, staff, o.directory, sessions, events, now),
-    access: new AccessGuard(o.db, now, o.engine, o.homologatedClients),
+    org: new OrgService(o.db, staff, o.directory, sessions, events, denials, orgCfg.minNetworkPrefix, now),
+    access: new AccessGuard(denials, now, o.engine, o.homologatedClients),
     limiter,
     events,
     network: new NetworkPolicy(o.auth.allowedNetworks),

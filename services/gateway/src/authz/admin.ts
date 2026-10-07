@@ -1,3 +1,4 @@
+import { own } from './engine.js';
 import { allow, deny, type Actor, type Decision, type RoleGrant, type StaffRole } from './types.js';
 
 /** Actions d'administration (onglet 2, section 2.3). */
@@ -28,8 +29,8 @@ const ADMIN: Record<AdminAction, Partial<Record<StaffRole, Rule>>> = {
   'card.issue': { agent_emission: { scope: 'establishment' }, directeur_medical: { scope: 'establishment' } },
   'card.activate': { agent_emission: { scope: 'establishment' }, directeur_medical: { scope: 'establishment' } },
   'card.block': { agent_emission: { scope: 'establishment' }, directeur_medical: { scope: 'establishment' }, operateur: { scope: 'any' } },
-  'account.create': { directeur_medical: { scope: 'establishment', targetRoles: DIRECTOR_MANAGES }, operateur: { scope: 'any', targetRoles: ['directeur_medical'] } },
-  'account.disable': { directeur_medical: { scope: 'establishment', targetRoles: DIRECTOR_MANAGES }, operateur: { scope: 'any', targetRoles: ['directeur_medical'] } },
+  'account.create': { directeur_medical: { scope: 'establishment', targetRoles: DIRECTOR_MANAGES }, operateur: { scope: 'any', targetRoles: OPERATOR_MANAGES } },
+  'account.disable': { directeur_medical: { scope: 'establishment', targetRoles: DIRECTOR_MANAGES }, operateur: { scope: 'any', targetRoles: OPERATOR_MANAGES } },
   'role.assign': { directeur_medical: { scope: 'establishment', targetRoles: DIRECTOR_MANAGES }, operateur: { scope: 'any', targetRoles: OPERATOR_MANAGES } },
   'emergency.control': { chef_service: { scope: 'service' }, directeur_medical: { scope: 'establishment' } },
   'journal.read': { chef_service: { scope: 'service' }, directeur_medical: { scope: 'establishment' }, operateur: { scope: 'any', needs: 'convention' } },
@@ -95,6 +96,7 @@ function upperLevel(actor: Extract<Actor, { kind: 'staff' }>, ctx: AdminContext 
 
 export function decideAdmin(req: AdminRequest): Decision {
   const { actor, action, target, context } = req;
+  if (!(ADMIN_ACTIONS as readonly unknown[]).includes(action) || !actor || typeof actor !== 'object') return deny('invalid_input');
   if (actor.kind !== 'staff') return deny('staff_only');
   if (!actor.active) return deny('account_disabled');
   if (actor.roles.length === 0) return deny('no_role');
@@ -112,7 +114,7 @@ export function decideAdmin(req: AdminRequest): Decision {
     if (e.actorRoles.includes('directeur_medical')) return upperLevel(actor, context);
     const t: AdminTarget = { establishmentId: e.establishmentId, serviceId: e.serviceId ?? null };
     for (const g of actor.roles) {
-      const rule = ADMIN[action][g.role];
+      const rule = own(ADMIN[action], g.role);
       if (rule && inScope(g, rule, actor, t)) return allow();
     }
     return deny('role_not_permitted');
@@ -120,7 +122,7 @@ export function decideAdmin(req: AdminRequest): Decision {
 
   let best: Decision = deny('role_not_permitted');
   for (const g of actor.roles) {
-    const rule = ADMIN[action][g.role];
+    const rule = own(ADMIN[action], g.role);
     if (!rule) continue;
     if (!inScope(g, rule, actor, target)) { best = deny('out_of_scope'); continue; }
     if (rule.needs === 'officialDocument' && !context?.officialDocument) { best = deny('official_document_required'); continue; }

@@ -26,6 +26,7 @@ const org = loadOrgConfig();
 const rt = createAuthRuntime({
   directory: loadDirectory(config.oidcIssuer),
   engine: org.engine,
+  org,
   homologatedClients: org.homologatedClients,
   auth: loadAuthConfig(),
   db,
@@ -39,3 +40,6 @@ const rt = createAuthRuntime({
 
 const app = buildApp(config, rt);
 await app.listen({ port: config.port, host: '0.0.0.0' });
+
+// Rattrapage périodique des écarts avec le fournisseur d'identité (activation / désactivation distante échouée).
+setInterval(() => { rt.org.reconcilePending().catch(() => {}); }, 60_000).unref();

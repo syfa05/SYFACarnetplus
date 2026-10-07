@@ -31,6 +31,9 @@ describe('C1 — prise en charge ouverte (T-ACC-02)', () => {
     expect(decide(req(staff('medecin'), 'consultations', 'M', { episode: closed, item: mine })).allow).toBe(true);
     expect(decide(req(staff('medecin'), 'consultations', 'C', { episode: closed, item: mine })).allow).toBe(true);
     denied(req(staff('medecin'), 'consultations', 'M', { episode: closed, item: goodItem({ authorSub: 'autre', status: 'brouillon' }) }), 'episode_closed', 'C1');
+    // « compléter et valider » : ni export ni partage d'une consultation clôturée
+    denied(req(staff('medecin'), 'consultations', 'E', { episode: closed, item: mine }), 'episode_closed', 'C1');
+    denied(req(staff('medecin'), 'consultations', 'P', { episode: closed, item: mine }), 'episode_closed', 'C1');
     // l'exception ne couvre ni l'historique (autres données) ni un autre établissement
     denied(req(staff('medecin'), 'summary', 'C', { episode: closed, item: mine }), 'episode_closed', 'C1');
     denied(req(staff('medecin'), 'consultations', 'M', { episode: openEpisode({ establishmentId: 'autre', closedAt: hoursAgo(5) }), item: mine }), 'other_establishment', 'C1');

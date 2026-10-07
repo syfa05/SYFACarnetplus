@@ -33,9 +33,17 @@ export function orgRoutes(app: FastifyInstance, rt: AuthRuntime): void {
     reply.code(201).send(await rt.org.createService(me(req), (req.params as { id: string }).id, (req.body as { name: string }).name)));
 
   app.post('/v1/admin/staff',
-    opts({ username: str(64), email: str(254), phone: str(20), establishmentId: str(36, 36), roles: { ...arr(roleSchema, 6), minItems: 1 } },
-      ['username', 'phone', 'establishmentId', 'roles']),
-    async (req, reply) => reply.code(201).send(await rt.org.createStaff(me(req), req.body as never)));
+    opts({ username: str(64), email: str(254), phone: str(20), establishmentId: str(36, 36), district: str(80), roles: { ...arr(roleSchema, 6), minItems: 1 } },
+      ['username', 'phone', 'roles']),
+    async (req, reply) => {
+      const r = await rt.org.createStaff(me(req), req.body as never);
+      return reply.header('cache-control', 'no-store').code(201).send(r); // mot de passe temporaire : jamais mis en cache
+    });
+
+  app.post('/v1/admin/staff/:sub/temporary-password', async (req, reply) =>
+    reply.header('cache-control', 'no-store').send(await rt.org.resetTemporaryPassword(me(req), (req.params as { sub: string }).sub)));
+
+  app.post('/v1/admin/directory/reconcile', async (req) => rt.org.reconcileDirectory(me(req)));
 
   app.post('/v1/admin/staff/:sub/activate', async (req, reply) => {
     await rt.org.activate(me(req), (req.params as { sub: string }).sub);
@@ -54,7 +62,13 @@ export function orgRoutes(app: FastifyInstance, rt: AuthRuntime): void {
   app.post('/v1/admin/staff/:sub/disable', opts({ reason: str(200) }, ['reason']), async (req) =>
     rt.org.disableStaff(me(req), (req.params as { sub: string }).sub, (req.body as { reason: string }).reason));
 
-  app.get('/v1/admin/reviews', async (req) => rt.org.pendingReviews(me(req)));
+  app.get('/v1/admin/reviews', { schema: { querystring: { type: 'object', properties: { limit: { type: 'string', pattern: '^[0-9]{1,3}$' }, cursor: str(80) }, additionalProperties: false } } },
+    async (req) => {
+      const q = req.query as { limit?: string; cursor?: string };
+      const limit = q.limit === undefined ? undefined : Number(q.limit);
+      if (limit !== undefined && (limit < 1 || limit > 100)) throw new AuthError('validation', 400);
+      return rt.org.pendingReviews(me(req), { limit, cursor: q.cursor });
+    });
 
   app.post('/v1/admin/reviews/:id', opts({ outcome: { type: 'string', enum: ['approved', 'contested'] }, comment: str(500) }, ['outcome']), async (req, reply) => {
     const b = req.body as { outcome: 'approved' | 'contested'; comment?: string };

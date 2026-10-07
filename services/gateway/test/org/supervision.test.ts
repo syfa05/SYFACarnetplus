@@ -11,12 +11,12 @@ async function setup(district?: string) {
   await e.staff(dir, 'dr.a', est, [{ role: 'medecin' }]);
   return { e, est, dir };
 }
-const pending = async (e: OrgEnv, sub: string) => (await e.call('GET', '/v1/admin/reviews', await e.tok(sub))).json() as Array<{ id: string; action: string; actorSub: string }>;
+const pending = async (e: OrgEnv, sub: string) => ((await e.call('GET', '/v1/admin/reviews', await e.tok(sub))).json() as { items: Array<{ id: string; action: string; actorSub: string }> }).items;
+/** Chef de district créé par l'API (opérateur), sans établissement. */
 const chiefOf = async (e: OrgEnv, username: string, district: string) => {
-  const sub = (await e.call('POST', '/v1/admin/staff', await e.tok('op-1'), { username, phone: '237690000031', establishmentId: await e.establishment(`C-${username.replace(/\W/g, '').toUpperCase()}`), roles: [{ role: 'directeur_medical' }] })).json() as { sub: string };
-  await e.call('POST', `/v1/admin/staff/${sub.sub}/roles`, await e.tok('op-1'), { role: 'chef_district' });
-  await e.db.query("UPDATE staff_member SET district=$2, establishment_id=NULL WHERE sub=$1", [sub.sub, district]);
-  return sub.sub;
+  const r = await e.call('POST', '/v1/admin/staff', await e.tok('op-1'), { username, phone: '237690000031', district, roles: [{ role: 'chef_district' }] });
+  if (r.statusCode !== 201) throw new Error(`chef ${r.statusCode} ${r.body}`);
+  return (r.json() as { sub: string }).sub;
 };
 
 describe('contrôle des actions du directeur médical par le niveau supérieur', () => {
@@ -52,13 +52,15 @@ describe('contrôle des actions du directeur médical par le niveau supérieur',
   });
   it('personne ne contrôle ses propres actions : refus du moteur ET de la base', async () => {
     const { e, dir } = await setup();
-    // un compte cumulant directeur et opérateur ne contrôle pas sa propre action
-    await e.db.query("INSERT INTO staff_role (id, staff_id, role, granted_by, granted_at) SELECT gen_random_uuid(), id, 'operateur', 'test', now() FROM staff_member WHERE sub=$1", [dir]);
     expect(await pending(e, dir)).toEqual([]);
     const id = (await e.db.query<{ id: string }>('SELECT id FROM admin_action WHERE actor_sub=$1', [dir])).rows[0]!.id;
     expect((await e.call('POST', `/v1/admin/reviews/${id}`, await e.tok(dir), { outcome: 'approved' })).statusCode).toBe(403);
     // même en contournant le service, la base refuse
     await expect(e.db.query("UPDATE admin_action SET reviewed_by=$2, reviewed_at=now(), review_outcome='approved' WHERE id=$1", [id, dir])).rejects.toThrow();
+  });
+  it('le cumul directeur + opérateur est impossible en base (rôle national = compte sans établissement)', async () => {
+    const { e, dir } = await setup();
+    await expect(e.db.query("INSERT INTO staff_role (id, staff_id, role, granted_by, granted_at) SELECT gen_random_uuid(), id, 'operateur', 'test', now() FROM staff_member WHERE sub=$1", [dir])).rejects.toThrow(/national/);
   });
   it('les refus de contrôle sont journalisés', async () => {
     const { e, dir } = await setup();

@@ -51,26 +51,26 @@ describe('adaptateur Keycloak (serveur simulé)', () => {
     await expect(d.createUser({ username: 'x', phone: '1', temporaryPassword: 'p' })).rejects.toMatchObject({ code: 'unavailable' });
   });
   it('activation : lit la représentation complète puis la réécrit (le téléphone n\'est pas effacé)', async () => {
-    const rep = { id: 'u1', username: 'dr.a', enabled: false, attributes: { phone_number: ['237690000001'] } };
+    const rep = { id: 'u1234567', username: 'dr.a', enabled: false, attributes: { phone_number: ['237690000001'] } };
     const f = await fake((req) => req.url!.endsWith('/token') ? TOKEN : req.method === 'GET' ? { status: 200, json: rep } : { status: 204 });
-    await new KeycloakDirectory(f.url, 'syfa', 'c', 's').setEnabled('u1', true);
+    await new KeycloakDirectory(f.url, 'syfa', 'c', 's').setEnabled('u1234567', true);
     const put = f.seen.find((s) => s.method === 'PUT')!;
-    expect(put.url).toBe('/admin/realms/syfa/users/u1');
+    expect(put.url).toBe('/admin/realms/syfa/users/u1234567');
     expect(JSON.parse(put.body)).toEqual({ ...rep, enabled: true });
   });
   it('jeton d\'accès mis en cache entre deux appels', async () => {
     const f = await fake((req) => req.url!.endsWith('/token') ? TOKEN : req.method === 'GET' ? { status: 200, json: {} } : { status: 204 });
     const d = new KeycloakDirectory(f.url, 'syfa', 'c', 's');
-    await d.setEnabled('u1', true); await d.setEnabled('u1', false);
+    await d.setEnabled('u1234567', true); await d.setEnabled('u1234567', false);
     expect(f.seen.filter((s) => s.url.endsWith('/token'))).toHaveLength(1);
   });
   it('jeton refusé, lecture introuvable, délai dépassé : indisponible, sans jamais reprendre le message externe', async () => {
     const f1 = await fake(() => ({ status: 401, json: { error_description: 'Patient Jean Dupont' } }));
-    await expect(new KeycloakDirectory(f1.url, 'syfa', 'c', 's').setEnabled('u1', true)).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(new KeycloakDirectory(f1.url, 'syfa', 'c', 's').setEnabled('u1234567', true)).rejects.toMatchObject({ code: 'unavailable' });
     const f2 = await fake((req) => req.url!.endsWith('/token') ? TOKEN : { status: 404 });
-    await expect(new KeycloakDirectory(f2.url, 'syfa', 'c', 's').setEnabled('u1', true)).rejects.toBeInstanceOf(DirectoryError);
+    await expect(new KeycloakDirectory(f2.url, 'syfa', 'c', 's').setEnabled('u1234567', true)).rejects.toBeInstanceOf(DirectoryError);
     const f3 = await fake(() => 'hang');
-    const err = await new KeycloakDirectory(f3.url, 'syfa', 'c', 's', 150).setEnabled('u1', true).catch((e) => e);
+    const err = await new KeycloakDirectory(f3.url, 'syfa', 'c', 's', 150).setEnabled('u1234567', true).catch((e) => e);
     expect(err).toBeInstanceOf(DirectoryError);
     expect(JSON.stringify([err.message, String(err.cause)])).not.toMatch(/Jean|Dupont|127\.0\.0\.1/);
   });
@@ -87,7 +87,7 @@ describe('configuration', () => {
     await expect(new UnconfiguredDirectory().createUser()).rejects.toMatchObject({ code: 'unavailable' });
   });
   it('règles paramétrables, lues strictement', () => {
-    expect(loadOrgConfig({})).toEqual({ engine: { releaseDelayHours: 72, emergencyMotiveMinLength: 10 }, homologatedClients: [] });
+    expect(loadOrgConfig({})).toEqual({ engine: { releaseDelayHours: 72, emergencyMotiveMinLength: 10 }, homologatedClients: [], minNetworkPrefix: { v4: 8, v6: 32 }, denialLog: { perWindow: 5, windowSeconds: 60 } });
     expect(loadOrgConfig({ ORG_RELEASE_DELAY_HOURS: '48', ORG_HOMOLOGATED_CLIENTS: 'dme-1, dme-2' })).toMatchObject({ engine: { releaseDelayHours: 48 }, homologatedClients: ['dme-1', 'dme-2'] });
     expect(() => loadOrgConfig({ ORG_RELEASE_DELAY_HOURS: '72h' })).toThrow();
     expect(() => loadOrgConfig({ ORG_RELEASE_DELAY_HOURS: '-1' })).toThrow();

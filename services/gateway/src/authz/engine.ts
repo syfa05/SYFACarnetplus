@@ -1,8 +1,35 @@
 import { C1_EXEMPT, C2_DATA, MATRIX, VITAL, type Cell, type Right, type Where } from './matrix.js';
 import {
-  allow, deny, type AccessRequest, type Actor, type Condition, type DataRole, type Decision, type EngineConfig,
+  ACTIONS, DATA_TYPES, allow, deny, type AccessRequest, type Actor, type Condition, type DataRole, type Decision, type EngineConfig,
   type Item, type RoleGrant, type StaffRole,
 } from './types.js';
+
+/** Lecture dans une table par clé propre : jamais la chaîne de prototypes (`constructor`, `__proto__`, `toString`). */
+export const own = <T>(table: Record<string, T> | Partial<Record<string, T>>, key: unknown): T | undefined =>
+  typeof key === 'string' && Object.hasOwn(table, key) ? (table as Record<string, T>)[key] : undefined;
+
+const validDate = (d: unknown): d is Date => d instanceof Date && Number.isFinite(d.getTime());
+const ACTOR_KINDS: readonly string[] = ['patient', 'representant', 'accompagnant', 'staff', 'system'];
+
+/**
+ * Forme de la requête. Le moteur est appelé avec des valeurs qui viennent parfois d'une route, d'un JSON ou d'une
+ * synchronisation : tout ce qui n'a pas EXACTEMENT le type attendu est refusé (jamais une comparaison silencieusement fausse).
+ */
+function malformed(req: AccessRequest): boolean {
+  const c = req?.context as AccessRequest['context'] | undefined;
+  if (!c || !req.actor || !ACTOR_KINDS.includes(req.actor.kind)) return true;
+  if (!(ACTIONS as readonly unknown[]).includes(req.action) || !(DATA_TYPES as readonly unknown[]).includes(req.data)) return true;
+  if (typeof req.patientId !== 'string' || req.patientId === '' || !validDate(c.now)) return true;
+  if (req.actor.kind === 'staff' && (!Array.isArray(req.actor.roles) || req.actor.roles.some((g) => typeof g?.role !== 'string'))) return true;
+  const ep = c.episode;
+  if (ep !== undefined && (typeof ep !== 'object' || ep === null || !validDate(ep.expiresAt) || (ep.closedAt != null && !validDate(ep.closedAt)) || typeof ep.establishmentId !== 'string')) return true;
+  const it = c.item;
+  if (it !== undefined && (typeof it !== 'object' || it === null || (it.validatedAt !== undefined && !validDate(it.validatedAt)))) return true;
+  if (c.emergency !== undefined && (typeof c.emergency !== 'object' || c.emergency === null || typeof c.emergency.motive !== 'string')) return true;
+  if (c.export !== undefined && (typeof c.export !== 'object' || c.export === null || (c.export.format !== 'pdf' && c.export.format !== 'fhir'))) return true;
+  if (c.opposedProfessionals !== undefined && !Array.isArray(c.opposedProfessionals)) return true;
+  return false;
+}
 
 export const DEFAULT_ENGINE_CONFIG: EngineConfig = { releaseDelayHours: 72, emergencyMotiveMinLength: 10 };
 
@@ -19,6 +46,8 @@ const DATA_ROLES: ReadonlySet<string> = new Set<DataRole>(['secretaire', 'infirm
  * toute cellule, condition ou information manquante donne un refus.
  */
 export function decide(req: AccessRequest, cfg: EngineConfig = DEFAULT_ENGINE_CONFIG): Decision {
+  if (malformed(req)) return deny('invalid_input');
+  if (!Number.isFinite(cfg?.releaseDelayHours) || !Number.isFinite(cfg?.emergencyMotiveMinLength)) return deny('invalid_config');
   const { actor, context } = req;
   // Export de masse : interdit à tous les rôles (onglet 2.5) ; seules les statistiques anonymisées vers DHIS2 existent.
   if (context.export?.bulk) return deny('bulk_export_forbidden');
@@ -74,7 +103,7 @@ function itemRule(where: Where | undefined, item: Item | undefined, actorSub?: s
 
 /** Évalue une cellule de la matrice pour un rôle, avec les conditions propres à la cellule (C2, C4, C5). */
 function evalCell(cell: Cell | undefined, req: AccessRequest, cfg: EngineConfig, side: 'patient' | 'staff', actorSub?: string): Decision {
-  const right: Right | undefined = cell?.[req.action];
+  const right: Right | undefined = cell ? own(cell, req.action) : undefined;
   if (!right) return deny('role_not_permitted');
   const item = req.context.item;
   const used: Condition[] = [];
@@ -102,7 +131,7 @@ function evalCell(cell: Cell | undefined, req: AccessRequest, cfg: EngineConfig,
 
 function grantCell(role: DataRole, req: AccessRequest, cfg: EngineConfig): Decision {
   const side = role === 'patient' || role === 'representant' ? 'patient' : 'staff';
-  const d = evalCell(MATRIX[req.data]?.[role], req, cfg, side);
+  const d = evalCell(own(MATRIX, req.data) ? own(own(MATRIX, req.data)!, role) : undefined, req, cfg, side);
   if (d.allow && role === 'representant') d.conditions.unshift('C3');
   return d;
 }
@@ -116,8 +145,8 @@ function c1(req: AccessRequest, actor: Extract<Actor, { kind: 'staff' }>, g: Rol
   const ep = req.context.episode;
   if (!ep) return deny('episode_required', 'C1');
   if (ep.establishmentId !== actor.establishmentId) return deny('other_establishment', 'C1');
-  // Exception : le professionnel complète et valide ses propres consultations après clôture, sans relire l'historique.
-  const own = req.data === 'consultations' && req.context.item?.authorSub === actor.sub && (g.role === 'medecin' || g.role === 'directeur_medical');
+  // Exception : le professionnel complète et valide ses propres consultations après clôture, sans relire l'historique ; ni export ni partage après clôture.
+  const own = req.data === 'consultations' && (req.action === 'C' || req.action === 'Cr' || req.action === 'M') && req.context.item?.authorSub === actor.sub && (g.role === 'medecin' || g.role === 'directeur_medical');
   if (own) return null;
   if (ep.closedAt || req.context.now >= ep.expiresAt) return deny('episode_closed', 'C1');
   if (ep.serviceScoped) {
@@ -145,7 +174,7 @@ function decideStaff(req: AccessRequest, actor: Extract<Actor, { kind: 'staff' }
   let best: Decision = deny('role_not_permitted');
   for (const g of actor.roles) {
     if (!DATA_ROLES.has(g.role)) continue;
-    let d = evalCell(MATRIX[req.data]?.[g.role as DataRole], req, cfg, 'staff', actor.sub);
+    let d = evalCell(own(MATRIX, req.data) ? own(own(MATRIX, req.data)!, g.role) : undefined, req, cfg, 'staff', actor.sub);
     if (d.allow && c1Applies(req)) {
       const blocked = c1(req, actor, g);
       if (blocked) d = blocked;
@@ -162,7 +191,7 @@ function decideEmergency(req: AccessRequest, actor: Extract<Actor, { kind: 'staf
   if (!actor.roles.some((g) => EMERGENCY_ROLES.includes(g.role))) return deny('emergency_role', 'C8');
   if ((req.context.emergency!.motive ?? '').trim().length < cfg.emergencyMotiveMinLength) return deny('emergency_motive_required', 'C8');
   if (req.action !== 'C') return deny('emergency_read_only', 'C8');
-  const vital = VITAL[req.data];
+  const vital = own(VITAL, req.data);
   if (!vital) return deny('emergency_vital_only', 'C8');
   const bad = itemRule(vital.where, req.context.item);
   if (bad) return deny('emergency_vital_only', 'C8');
