@@ -1,6 +1,6 @@
 # Keycloak — realm `syfa` (lot L2)
 
-> **Historique** : le premier import réel (revue externe) a échoué sur `unmanagedAttributePolicy: "DISABLED"`, valeur refusée par Keycloak ; la clé est retirée. Un second import réel n'a pas encore été fait : **à refaire et à consigner ici** (version testée, résultat).
+> **Historique** : le premier import réel (revue externe) a échoué sur `unmanagedAttributePolicy: "DISABLED"`, valeur refusée par Keycloak ; la clé est retirée. Un second import réel (Keycloak 26.8.0, fichier du commit `d834ac3`, donc **avant** la correction) a confirmé l'échec. Le fichier corrigé (commit `23965cd` et suivants) **n'a pas encore été importé** : à faire et à consigner ici (version, résultat).
 >
 > **Non vérifié** : ce realm n'a pas pu être importé dans un Keycloak réel pendant le développement du lot L2
 > (pas de démon Docker ni d'accès aux images dans l'environnement de travail). Le contrôle de la passerelle est
@@ -40,6 +40,6 @@ Tant que cette étape n'est pas faite, **aucun professionnel ne peut se connecte
   jetons « client credentials » des clients déclarés dans `AUTH_SYSTEM_CLIENTS`.
 
 ## Version et import
-- L'image est **épinglée** par `KEYCLOAK_IMAGE` (défaut `quay.io/keycloak/keycloak:26.0.7`, voir `infra/docker-compose.yml`). Relever la version seulement après un import réel réussi, et la noter ici.
+- L'image est **épinglée** par `KEYCLOAK_IMAGE` (défaut `quay.io/keycloak/keycloak:26.8.0`, voir `infra/docker-compose.yml`). Relever la version seulement après un import réel réussi, et la noter ici.
 - Le fichier est importé au démarrage (`--import-realm`) ; il ne l'est qu'à la **première** création du realm : après modification, `make reset-db` (ou supprimer le realm) puis `make up`.
 - Contrôles statiques exécutés par `make test` et la CI : `scripts/test/realm.test.mjs` (politique des attributs, `phone_number` modifiable par l'administrateur seulement, clients, TOTP, version épinglée). Ils évitent de réintroduire les erreurs connues, **ils ne remplacent pas l'import**.

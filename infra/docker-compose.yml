@@ -60,7 +60,7 @@ services:
 
   keycloak:
     # Version épinglée (jamais « latest ») : l'import du realm dépend de la version. À relever après validation d'un import réel.
-    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.0.7}
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.0}
     command: start-dev --http-port=8081 --import-realm
     volumes: [./keycloak:/opt/keycloak/data/import:ro]
     depends_on: [postgres-keycloak]
