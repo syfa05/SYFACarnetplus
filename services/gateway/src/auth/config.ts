@@ -1,3 +1,4 @@
+import { parseBool, parseIntStrict } from '../env.js';
 import { parseCidr } from './network.js';
 
 export type ClientClass = 'shared_pc' | 'smartphone' | 'patient_app';
@@ -42,18 +43,16 @@ export interface AuthConfig {
    */
   deviceEnrolmentNetworkOnly: boolean;
   /** Appareils actifs par professionnel, et nouveaux enregistrements par fenêtre (chacun déclenche un SMS d'alerte). */
-  device: { maxActive: number; registrationsPerWindow: number; registrationWindowSeconds: number };
+  device: {
+    maxActive: number; registrationsPerWindow: number; registrationWindowSeconds: number;
+    /** Un enrôlement « en attente » plus ancien (crash entre l'alerte et l'activation) ne compte plus dans le plafond. */
+    pendingSeconds: number;
+  };
 }
 
 export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
-  const int = (k: string, d: number, min = 1) => {
-    const v = env[k];
-    if (v === undefined || v === '') return d;
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < min) throw new Error(`${k} doit être un entier >= ${min}`);
-    return n;
-  };
-  const bool = (k: string, d: boolean) => (env[k] === undefined || env[k] === '' ? d : env[k] === 'true');
+  const int = (k: string, d: number, min = 1) => parseIntStrict(env, k, d, min);
+  const bool = (k: string, d: boolean) => parseBool(env, k, d);
   const list = (k: string, d: string) => (env[k] ?? d).split(',').map((s) => s.trim()).filter(Boolean);
 
   const clientClasses: Record<string, ClientClass> = {};
@@ -102,6 +101,7 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
       maxActive: int('AUTH_DEVICE_MAX_ACTIVE', 5),
       registrationsPerWindow: int('AUTH_DEVICE_REGISTRATIONS_PER_WINDOW', 5),
       registrationWindowSeconds: int('AUTH_DEVICE_REGISTRATION_WINDOW_SECONDS', 3600),
+      pendingSeconds: int('AUTH_DEVICE_PENDING_SECONDS', 300),
     },
   };
   for (const n of cfg.allowedNetworks) {

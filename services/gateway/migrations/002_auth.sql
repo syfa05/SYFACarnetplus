@@ -51,7 +51,9 @@ CREATE TABLE auth_professional_device (
   subject      text NOT NULL,
   key_hash     text NOT NULL,                -- HMAC de la clé d'appareil (générée sur l'appareil)
   label        text,
-  status       text NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+  -- pending : réservé, alerte pas encore confirmée (inutilisable) ; active : alerte envoyée ; revoked : définitif
+  status       text NOT NULL DEFAULT 'active' CHECK (status IN ('pending','active','revoked')),
+  pending_since timestamptz,
   created_at   timestamptz NOT NULL,
   last_seen_at timestamptz,
   revoked_at   timestamptz,

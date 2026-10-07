@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { loadAuthConfig } from '../../src/auth/config.js';
+import { vi } from 'vitest';
 import { cleanup, makeEnv, type Env } from './helpers.js';
 
 afterAll(cleanup);
@@ -239,6 +240,96 @@ describe('R5 — plafond d\'appareils et inondation d\'alertes', () => {
     const autre = await env.signPro({ azp: 'syfa-android-pro', sid: 'o', sub: 'autre', phone_number: '237677000112' });
     expect((await enrol(env, autre, key(3))).statusCode).toBe(201);
     for (const bad of [{ AUTH_DEVICE_MAX_ACTIVE: '0' }, { AUTH_DEVICE_REGISTRATIONS_PER_WINDOW: 'x' }, { AUTH_DEVICE_REGISTRATION_WINDOW_SECONDS: '0' }]) expect(() => loadAuthConfig(bad)).toThrow();
-    expect(loadAuthConfig({}).device).toEqual({ maxActive: 5, registrationsPerWindow: 5, registrationWindowSeconds: 3600 });
+    expect(loadAuthConfig({}).device).toEqual({ maxActive: 5, registrationsPerWindow: 5, registrationWindowSeconds: 3600, pendingSeconds: 300 });
+  });
+});
+
+describe('enrôlement en trois temps : aucun appel externe sous transaction (réserve de la revue externe)', () => {
+  const pending = async (env: Env) => (await env.db.query<{ status: string }>('SELECT status FROM auth_professional_device ORDER BY created_at')).rows.map((r) => r.status);
+  /** Fait échouer l'activation (3e temps) comme le ferait une panne de base juste après l'envoi du SMS. */
+  const breakActivation = (env: Env) => {
+    const db = env.db as unknown as { transaction: (fn: (tx: { query: (s: string, p?: unknown[]) => Promise<unknown> }) => Promise<unknown>) => Promise<unknown> };
+    const real = db.transaction.bind(db);
+    return vi.spyOn(db, 'transaction').mockImplementation((fn) => real((tx) => fn({ ...tx, query: (sql: string, p?: unknown[]) => {
+      if (/SET status='active'/.test(sql)) throw new Error('db down');
+      return tx.query(sql, p);
+    } } as never)));
+  };
+
+  it('l\'appareil est « pending » (inutilisable) au moment où le SMS part, puis « active »', async () => {
+    const env = await makeEnv(NETS);
+    const t = await phone(env);
+    let seen: string[] = [];
+    let usable = 0;
+    env.sms.onSend = async () => {
+      seen = await pending(env);
+      usable = (await call(env, 'GET', '/v1/me', INSIDE, { token: t, headers: { 'x-device-key': key(1) } })).statusCode;
+    };
+    expect((await enrol(env, t, key(1))).statusCode).toBe(201);
+    expect(seen).toEqual(['pending']);
+    expect(usable).toBe(401); // pas encore utilisable
+    expect(await pending(env)).toEqual(['active']);
+    expect((await call(env, 'GET', '/v1/me', INSIDE, { token: t, headers: { 'x-device-key': key(1) } })).statusCode).toBe(200);
+  });
+  it('un fournisseur SMS lent ne bloque pas les autres enrôlements du même professionnel (aucune transaction ni verrou tenus pendant l\'envoi)', async () => {
+    const env = await makeEnv(NETS);
+    let release!: () => void;
+    env.sms.gate = new Promise<void>((r) => (release = r));
+    const t = await phone(env);
+    const a = enrol(env, t, key(1));
+    const b = enrol(env, t, key(2));
+    await vi.waitFor(() => expect(env.sms.started).toBe(2)); // B a franchi la réservation pendant que A attend son SMS
+    expect(await pending(env)).toEqual(['pending', 'pending']);
+    release();
+    expect([(await a).statusCode, (await b).statusCode]).toEqual([201, 201]);
+    expect(await pending(env)).toEqual(['active', 'active']);
+  });
+  it('SMS accepté puis activation en échec : l\'appareil reste inutilisable ; la reprise réussit (alerte renvoyée : au moins une fois)', async () => {
+    const env = await makeEnv(NETS);
+    const t = await phone(env);
+    const spy = breakActivation(env);
+    expect((await enrol(env, t, key(1))).statusCode).toBe(500); // panne : erreur générique, rien d'autre
+    spy.mockRestore();
+    expect(env.sms.sent).toHaveLength(1);                       // l'alerte est partie
+    expect(await pending(env)).toEqual(['pending']);            // mais l'appareil n'est pas actif
+    expect((await call(env, 'GET', '/v1/me', INSIDE, { token: t, headers: { 'x-device-key': key(1) } })).json()).toEqual({ error: 'device_not_registered' });
+    const retry = await enrol(env, t, key(1));
+    expect(retry.statusCode).toBe(201);
+    expect(env.sms.sent).toHaveLength(2);                       // renvoi documenté
+    expect(await pending(env)).toEqual(['active']);             // une seule ligne, jamais de doublon
+    expect((await call(env, 'GET', '/v1/me', INSIDE, { token: t, headers: { 'x-device-key': key(1) } })).statusCode).toBe(200);
+  });
+  it('une réservation orpheline compte dans le plafond jusqu\'à son expiration, puis plus', async () => {
+    const env = await makeEnv({ ...NETS, AUTH_DEVICE_MAX_ACTIVE: '1' });
+    const t = await phone(env);
+    const spy = breakActivation(env);
+    await enrol(env, t, key(1));
+    spy.mockRestore();
+    expect((await enrol(env, await phone(env, 'p2'), key(2))).statusCode).toBe(409); // la réservation compte encore
+    env.clock.advance(301);
+    expect((await enrol(env, await phone(env, 'p3'), key(2))).statusCode).toBe(201); // expirée : ne bloque plus
+    expect((await env.db.query("SELECT 1 FROM auth_professional_device WHERE status='active'")).rows).toHaveLength(1);
+  });
+  it('échec du SMS : réservation supprimée (aucune ligne), quota rendu exactement, nouvel essai possible', async () => {
+    const env = await makeEnv(NETS);
+    const t = await phone(env);
+    env.sms.failNext = true;
+    expect((await enrol(env, t, key(1))).json()).toEqual({ error: 'alert_failed' });
+    expect(await pending(env)).toEqual([]);
+    expect((await env.db.query<{ hits: number }>("SELECT hits FROM auth_rate_limit WHERE key LIKE 'device-register:%'")).rows.map((r) => Number(r.hits))).toEqual([0]);
+    expect((await enrol(env, t, key(1))).statusCode).toBe(201);
+    expect((await env.db.query<{ hits: number }>("SELECT hits FROM auth_rate_limit WHERE key LIKE 'device-register:%'")).rows.map((r) => Number(r.hits))).toEqual([1]);
+  });
+  it('un appareil en attente se révoque comme un autre ; une révocation pendant l\'envoi bloque l\'activation', async () => {
+    const env = await makeEnv(NETS);
+    const t = await phone(env);
+    env.sms.onSend = async () => {
+      const id = (await env.db.query<{ id: string }>('SELECT id FROM auth_professional_device')).rows[0]!.id;
+      await env.rt.devices.revoke(id, { reason: 'test', actor: 'victime' });
+    };
+    const r = await enrol(env, t, key(1));
+    expect(r.statusCode).toBe(409);
+    expect(r.json()).toEqual({ error: 'enrolment_interrupted' });
+    expect(await pending(env)).toEqual(['revoked']);
   });
 });

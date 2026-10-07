@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadAuthConfig } from '../../src/auth/config.js';
+import { loadConfig } from '../../src/config.js';
 import { AuthCrypto, generateAuthKey } from '../../src/auth/crypto.js';
 import { Translator } from '../../src/auth/sms.js';
 import { fileURLToPath } from 'node:url';
@@ -69,5 +70,40 @@ describe('textes SMS (principe 8, F-JRN-02)', () => {
   });
   it('clé absente : erreur explicite (jamais un texte vide envoyé)', () => {
     expect(() => tr.t('fr', 'sms.inexistant')).toThrow();
+  });
+});
+
+describe('booléens et nombres de l\'environnement : jamais de faute de frappe silencieuse', () => {
+  const AUTH_BOOLS: Array<[string, (c: ReturnType<typeof loadAuthConfig>) => boolean, boolean]> = [
+    ['AUTH_DEVICE_ENROLMENT_NETWORK_ONLY', (c) => c.deviceEnrolmentNetworkOnly, true],
+    ['AUTH_PIN_REJECT_WEAK', (c) => c.pin.rejectWeak, true],
+    ['AUTH_REVOKE_OTHER_DEVICES_ON_ENROL', (c) => c.revokeOtherDevicesOnEnrol, true],
+    ['AUTH_ALERT_ON_FIRST_DEVICE', (c) => c.alertOnFirstProfessionalDevice, true],
+  ];
+  const INVALID = ['treu', 'flase', 'TRUE', 'False', 'True', '1', '0', 'yes', 'no', 'on', 'off', ' true', 'true ', 'oui', 'vrai', 'null'];
+  const base = { OIDC_ISSUER: 'http://kc/realms/x', OIDC_AUDIENCE: 'a' };
+
+  it.each(AUTH_BOOLS)('%s : « true » et « false » seuls sont acceptés ; vide ou absent = défaut sûr', (key, read, def) => {
+    expect(read(loadAuthConfig({ [key]: 'true' }))).toBe(true);
+    expect(read(loadAuthConfig({ [key]: 'false' }))).toBe(false);
+    expect(read(loadAuthConfig({}))).toBe(def);
+    expect(read(loadAuthConfig({ [key]: '' }))).toBe(def);
+    for (const v of INVALID) expect(() => loadAuthConfig({ [key]: v }), `${key}=${v}`).toThrow(key);
+  });
+  it('AUTO_MIGRATE : même rigueur', () => {
+    expect(loadConfig({ ...base, AUTO_MIGRATE: 'true' }).autoMigrate).toBe(true);
+    expect(loadConfig({ ...base, AUTO_MIGRATE: 'false' }).autoMigrate).toBe(false);
+    expect(loadConfig(base).autoMigrate).toBe(false);
+    for (const v of INVALID) expect(() => loadConfig({ ...base, AUTO_MIGRATE: v }), v).toThrow('AUTO_MIGRATE');
+  });
+  it('la faute de frappe sur la restriction d\'enrôlement ne la désactive plus (cas relevé en revue)', () => {
+    expect(() => loadAuthConfig({ AUTH_DEVICE_ENROLMENT_NETWORK_ONLY: 'treu' })).toThrow(/true.*false/);
+    expect(() => loadAuthConfig({ AUTH_DEVICE_ENROLMENT_NETWORK_ONLY: 'flase' })).toThrow();
+  });
+  it('PORT : entier entre 1 et 65535 ; les nombres de sécurité refusent « 3x », « -1 », « 1.5 »', () => {
+    expect(loadConfig({ ...base, PORT: '9090' }).port).toBe(9090);
+    expect(loadConfig(base).port).toBe(8080);
+    for (const v of ['0', '65536', 'abc', '80x', '-1', '1.5', ' 80']) expect(() => loadConfig({ ...base, PORT: v }), v).toThrow('PORT');
+    for (const v of ['3x', '-1', '1.5', '0x10', '1e3']) expect(() => loadAuthConfig({ AUTH_OTP_MAX_ATTEMPTS: v }), v).toThrow('AUTH_OTP_MAX_ATTEMPTS');
   });
 });

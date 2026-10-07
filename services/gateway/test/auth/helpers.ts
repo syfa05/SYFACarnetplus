@@ -23,7 +23,16 @@ export const PHONE = '237690000001';
 export class FakeSms implements SmsSender {
   sent: Array<{ to: string; text: string }> = [];
   failNext = false;
+  /** Appels de `send` commencés (avant la fin de la barrière). */
+  started = 0;
+  /** Si défini, `send` attend cette promesse avant d'aboutir (simule un fournisseur lent). */
+  gate?: Promise<void>;
+  /** Appelé au début de chaque envoi (inspection de l'état de la base à cet instant). */
+  onSend?: () => Promise<void>;
   async send(to: string, text: string) {
+    this.started++;
+    await this.onSend?.();
+    if (this.gate) await this.gate;
     if (this.failNext) { this.failNext = false; throw Object.assign(new Error('Patient Jean Dupont'), { code: 'HTTP_503' }); }
     this.sent.push({ to, text });
   }

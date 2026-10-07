@@ -77,3 +77,22 @@
 - `services/gateway/src/auth.ts` supprimé : reliquat du lot L0 (contrôle de jeton sans second facteur ni session), plus importé par personne, et doublon d'une déclaration de type. Seul `src/auth/hook.ts` contrôle les requêtes.
 - Tests regroupés **par thème** (voir `services/gateway/test/README.md`) au lieu de par tour de revue ; les 186 tests sont strictement les mêmes (noms comparés avant/après, hors préfixe « revue N — »).
 - Corrections de mes messages précédents : la CI GitHub avait bien tourné à chaque envoi (12 exécutions vertes) et l'image Docker est construite, signée et vérifiée par la CI ; seul `make up` n'a pas été exécuté.
+
+## Revue externe du lot L2 — constats et corrections
+Rapport reçu d'un relecteur indépendant (import du realm dans un vrai Keycloak, suite complète sur PostgreSQL réel, build Docker). Chaque constat a été **reproduit** puis corrigé avec un test qui échoue sans le correctif.
+
+| Constat | Gravité | Correction |
+|---|---|---|
+| Le realm ne s'importe pas : `unmanagedAttributePolicy: "DISABLED"` refusée par Keycloak | **Bloquant** | Clé retirée (absente = attributs non déclarés désactivés ; valeurs acceptées : `ENABLED`, `ADMIN_VIEW`, `ADMIN_EDIT`). Image Keycloak **épinglée** (`KEYCLOAK_IMAGE`, défaut `26.0.7`). Contrôles statiques du realm et du Compose (`scripts/test/realm.test.mjs`, CI). **Réimport réel à refaire par le relecteur** : je n'ai pas accès à un Keycloak ni aux registres d'images, la valeur retirée est la seule erreur connue, rien ne prouve qu'il n'y en ait pas d'autre. |
+| Rejeu concurrent d'un jeton patient : le perdant est refusé mais la session reste active et le jeton du gagnant fonctionne | **Majeur** | `refresh` décidé dans UNE transaction qui verrouille la ligne de session (`FOR UPDATE`) : la seconde présentation attend, trouve le jeton déjà échangé et **révoque la session, gagnant compris**. Test sur PostgreSQL (15 essais en parallèle) : échoue dès le 1er essai sur l'ancien code. **Conséquence** : une application doit sérialiser ses rafraîchissements — deux requêtes simultanées avec le même jeton ferment la session. |
+| Faute de configuration fail-open : `AUTH_DEVICE_ENROLMENT_NETWORK_ONLY=treu` désactivait la restriction | **Majeur** | Lecture stricte de l'environnement (`src/env.ts`) : un booléen n'accepte que `true` / `false` (vide ou absent = défaut sûr), un entier refuse `3x`, `-1`, `1.5`, `1e3`, `0x10` ; `PORT` validé. Appliqué à tous les booléens d'authentification et à `AUTO_MIGRATE`. |
+| SMS d'enrôlement envoyé dans la transaction SQL (SMS parti puis écriture annulée, renvoi à la reprise ; connexion et verrou tenus pendant l'appel externe) | Réserve | Enrôlement en **trois temps** sans appel externe sous transaction : réservation (`pending`, inutilisable) → alerte → activation. Échec d'envoi : réservation supprimée et quota rendu ; activation en échec après l'envoi : appareil inutilisable, reprise possible, **alerte envoyée au moins une fois** (renvoi possible à la reprise, assumé) ; réservation orpheline expirée après `AUTH_DEVICE_PENDING_SECONDS` (300 s). Pas d'outbox : l'alerte reste synchrone (le professionnel doit savoir tout de suite si elle n'est pas partie). |
+| `make up` bloqué par le téléchargement de `minio/minio:latest` | Constat d'environnement | MinIO, HAPI FHIR, Vault et la base FHIR passent dans le profil `full` (`make up-full`) : `make up` ne démarre plus que l'authentification (identité, Keycloak, passerelle, faux SMS). |
+
+### Réserves du relecteur — état
+- Tests MFA sur **jetons synthétiques** : ils ne valident ni l'émission réelle des revendications `amr`/`acr` par Keycloak, ni le profil `phone_number`. **Reste à vérifier** avec un Keycloak qui démarre (flux « step-up » à configurer, `infra/keycloak/README.md`).
+- Une revue locale ne remplace pas le **test d'intrusion externe** exigé avant le pilote (onglet 6).
+
+### Recommandations de décision du relecteur (à confirmer par le porteur de projet)
+Garder le PIN vérifié côté serveur (déverrouillage hors ligne impossible, assumé) · garder « un numéro, un dossier » jusqu'au lot L9 · garder la restriction réseau et l'enrôlement à l'établissement, **toute configuration invalide bloque le démarrage** (fait) · garder le numéro professionnel obligatoire tant que l'alerte SMS est le mécanisme · **confirmer les plafonds SMS avec le tarif réel** (5 codes par numéro et par heure, plus les alertes d'appareil).
+- Rappel : `002_auth.sql` modifiée en place (statut `pending`, `pending_since`) : **rejouer `make reset-db`** sur toute base de développement déjà migrée.

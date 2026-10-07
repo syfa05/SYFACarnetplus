@@ -31,6 +31,13 @@ export class RateLimiter {
     return { allowed: hits <= limit, retryAfterSeconds: windowStart + windowSeconds - nowS };
   }
 
+  /** Annule une prise (opération finalement non réalisée) : un échec côté serveur ne doit pas consommer le quota. */
+  async refund(label: string, subject: string, windowSeconds: number, q: Queryable = this.db): Promise<void> {
+    const nowS = Math.floor(this.now().getTime() / 1000);
+    await q.query('UPDATE auth_rate_limit SET hits = GREATEST(hits - 1, 0) WHERE key=$1 AND window_start=$2',
+      [`${label}:${this.crypto.hmac('ratelimit', subject)}`, nowS - (nowS % windowSeconds)]);
+  }
+
   /** Purge des fenêtres échues (tâche périodique). */
   async purge(olderThanSeconds = 86_400): Promise<void> {
     await this.db.query('DELETE FROM auth_rate_limit WHERE window_start < $1', [Math.floor(this.now().getTime() / 1000) - olderThanSeconds]);
