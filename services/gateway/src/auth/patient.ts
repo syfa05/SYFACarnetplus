@@ -197,34 +197,37 @@ export class PatientAuthService {
     return { accessToken: access.token, refreshToken: refresh.secret, expiresIn: access.expiresIn };
   }
 
+  /**
+   * Rotation du jeton de rafraîchissement. Toute la décision se prend dans UNE transaction qui verrouille la ligne de
+   * session : deux présentations simultanées du même jeton ne peuvent pas lire l'ancien état en parallèle. La seconde
+   * attend la première, trouve le jeton déjà échangé (`prev_refresh_hash`) et révoque la session — gagnant compris :
+   * un même jeton présenté deux fois, c'est un jeton copié. Conséquence : une application doit sérialiser ses
+   * rafraîchissements (deux requêtes simultanées avec le même jeton ferment la session).
+   */
   async refresh(refreshToken: string): Promise<PatientSession> {
     if (typeof refreshToken !== 'string' || refreshToken.length < 20 || refreshToken.length > 200) throw new AuthError('validation', 400);
     const hash = this.crypto.secretHash(refreshToken);
-    const cur = (await this.db.query<{ id: string; subject: string; device_id: string }>(
-      'SELECT id, subject, device_id FROM auth_session WHERE refresh_hash=$1 AND kind=$2', [hash, 'patient'])).rows[0];
-    if (!cur) {
-      const reused = (await this.db.query<{ id: string; subject: string }>('SELECT id, subject FROM auth_session WHERE prev_refresh_hash=$1', [hash])).rows[0];
-      if (reused) {
-        // Jeton déjà échangé présenté à nouveau : vol probable, la session est révoquée.
-        await this.db.transaction(async (tx) => {
-          await this.sessions.revoke(tx, reused.id, 'refresh_reuse');
-          await this.events.record(tx, 'refresh_reuse', reused.subject, { session: reused.id });
-        });
+    const result = await this.db.transaction(async (tx) => {
+      const row = (await tx.query<{ id: string; subject: string; device_id: string; refresh_hash: string | null }>(
+        `SELECT id, subject, device_id, refresh_hash FROM auth_session
+         WHERE kind='patient' AND (refresh_hash=$1 OR prev_refresh_hash=$1) FOR UPDATE`, [hash])).rows[0];
+      if (!row) return null;
+      if (row.refresh_hash !== hash) {
+        // Jeton déjà échangé, présenté à nouveau : vol probable, la session est révoquée (et la révocation est validée).
+        await this.sessions.revoke(tx, row.id, 'refresh_reuse');
+        await this.events.record(tx, 'refresh_reuse', row.subject, { session: row.id });
+        return null;
       }
-      throw new AuthError('invalid_refresh', 401);
-    }
-    const check = await this.sessions.touch(cur.id, 'patient_app');
-    if (!check.ok) throw new AuthError('invalid_refresh', 401);
-    const dev = (await this.db.query<{ status: string }>('SELECT status FROM auth_patient_device WHERE id=$1', [cur.device_id])).rows[0];
-    if (dev?.status !== 'active') throw new AuthError('invalid_refresh', 401);
-
-    const next = this.crypto.newSecret();
-    const rotated = await this.db.query(
-      'UPDATE auth_session SET prev_refresh_hash=refresh_hash, refresh_hash=$2 WHERE id=$1 AND refresh_hash=$3 AND revoked_at IS NULL RETURNING id',
-      [cur.id, next.hash, hash]);
-    if (!rotated.rows.length) throw new AuthError('invalid_refresh', 401); // échange simultané : un seul gagne
-    const access = await this.tokens.issue({ sub: cur.subject, sid: cur.id });
-    return { accessToken: access.token, refreshToken: next.secret, expiresIn: access.expiresIn };
+      if (!(await this.sessions.touch(row.id, 'patient_app', tx)).ok) return null;
+      const dev = (await tx.query<{ status: string }>('SELECT status FROM auth_patient_device WHERE id=$1', [row.device_id])).rows[0];
+      if (dev?.status !== 'active') return null;
+      const next = this.crypto.newSecret();
+      await tx.query('UPDATE auth_session SET prev_refresh_hash=refresh_hash, refresh_hash=$2 WHERE id=$1', [row.id, next.hash]);
+      return { sub: row.subject, sid: row.id, refreshToken: next.secret };
+    });
+    if (!result) throw new AuthError('invalid_refresh', 401);
+    const access = await this.tokens.issue({ sub: result.sub, sid: result.sid });
+    return { accessToken: access.token, refreshToken: result.refreshToken, expiresIn: access.expiresIn };
   }
 
   async logout(sessionId: string): Promise<void> {

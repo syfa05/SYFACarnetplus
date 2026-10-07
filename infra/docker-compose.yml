@@ -1,4 +1,5 @@
 # Environnement de développement SYFA Carnet+ (données fictives uniquement).
+# Par défaut (`make up`) : identité, Keycloak, passerelle, faux SMS. Profil « full » (`make up-full`) : + FHIR, MinIO, Vault.
 name: syfa
 services:
   postgres-identity:
@@ -14,6 +15,7 @@ services:
       retries: 10
 
   postgres-fhir:
+    profiles: [full]   # pas nécessaire à l'authentification (lots L6 et suivants) : `make up-full`
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: fhir
@@ -34,6 +36,7 @@ services:
     volumes: [pg_keycloak:/var/lib/postgresql/data]
 
   hapi-fhir:
+    profiles: [full]   # pas nécessaire à l'authentification (lots L6 et suivants) : `make up-full`
     image: hapiproject/hapi:latest
     depends_on:
       postgres-fhir: { condition: service_healthy }
@@ -46,6 +49,7 @@ services:
     ports: ["8082:8080"]
 
   minio:
+    profiles: [full]   # pas nécessaire à l'authentification (lots L6 et suivants) : `make up-full`
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
@@ -55,7 +59,8 @@ services:
     ports: ["9000:9000", "9001:9001"]
 
   keycloak:
-    image: quay.io/keycloak/keycloak:latest
+    # Version épinglée (jamais « latest ») : l'import du realm dépend de la version. À relever après validation d'un import réel.
+    image: ${KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.0}
     command: start-dev --http-port=8081 --import-realm
     volumes: [./keycloak:/opt/keycloak/data/import:ro]
     depends_on: [postgres-keycloak]
@@ -66,9 +71,25 @@ services:
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
     ports: ["8081:8081"]
 
+  # Configure le « step-up » (second facteur dans les jetons) une fois Keycloak démarré ; idempotent, voir infra/keycloak/README.md.
+  keycloak-setup:
+    image: node:22-alpine
+    working_dir: /app
+    volumes: [./keycloak:/app:ro]
+    depends_on: [keycloak]
+    environment:
+      KEYCLOAK_URL: http://keycloak:8081
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_WAIT_SECONDS: "180"
+    command: node configure-stepup.mjs
+    restart: "no"
+
   vault:
+    profiles: [full]   # pas nécessaire à l'authentification (lots L6 et suivants) : `make up-full`
     image: hashicorp/vault:latest
     command: server -dev -dev-listen-address=0.0.0.0:8200
     cap_add: [IPC_LOCK]

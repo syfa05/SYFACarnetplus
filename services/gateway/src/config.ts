@@ -1,4 +1,5 @@
 import { parseCidr } from './auth/network.js';
+import { parseBool, parseIntStrict } from './env.js';
 
 // Configuration externalisée (principe 9 : aucune valeur paramétrable codée en dur).
 export type Mode = 'central' | 'local';
@@ -58,13 +59,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const oidcIssuer = required(env, 'OIDC_ISSUER');
   return {
     mode,
-    port: Number(env.PORT ?? 8080),
+    port: parseIntStrict(env, 'PORT', 8080, 1, 65535),
     oidcIssuer,
     oidcAudience: required(env, 'OIDC_AUDIENCE'),
     jwksUrl: env.OIDC_JWKS_URL ?? `${oidcIssuer}/protocol/openid-connect/certs`,
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     databaseUrl: env.DATABASE_URL,
-    autoMigrate: env.AUTO_MIGRATE === 'true',
+    autoMigrate: parseBool(env, 'AUTO_MIGRATE', false),
     migrationsDir: env.MIGRATIONS_DIR ?? './migrations',
     i18nDir: env.I18N_DIR ?? '../../i18n',
     smsUrl: env.SMS_URL,

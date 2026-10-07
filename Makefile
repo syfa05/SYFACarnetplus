@@ -1,6 +1,6 @@
 COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: up down reset-db test lint i18n verify-image
+.PHONY: up up-full down reset-db keycloak-stepup keycloak-check test lint i18n verify-image
 .env:
 	cp .env.example .env
 	@# Secrets de DÉVELOPPEMENT uniquement, générés localement (jamais commités).
@@ -11,8 +11,19 @@ COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 up: .env
 	$(COMPOSE) up -d --build
 
+# + serveur FHIR, stockage objet, coffre de clés (non nécessaires à l'authentification)
+up-full: .env
+	$(COMPOSE) --profile full up -d --build
+
+# (Re)configure le step-up de Keycloak, ou vérifie seulement (code de sortie 1 si non conforme)
+keycloak-stepup: .env
+	$(COMPOSE) run --rm keycloak-setup
+
+keycloak-check: .env
+	$(COMPOSE) run --rm keycloak-setup node configure-stepup.mjs --check
+
 down:
-	$(COMPOSE) down
+	$(COMPOSE) --profile full down
 
 lint: i18n
 	node scripts/check-hardcoded-strings.mjs
@@ -21,7 +32,7 @@ lint: i18n
 # Supprime les volumes de développement (bases identité, FHIR, Keycloak, MinIO) : à faire après toute
 # modification d'une migration déjà appliquée en local. Données fictives uniquement.
 reset-db: .env
-	$(COMPOSE) down -v
+	$(COMPOSE) --profile full down -v
 
 test:
 	node --test scripts/test/*.test.mjs

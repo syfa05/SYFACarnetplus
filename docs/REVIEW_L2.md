@@ -13,8 +13,8 @@ Le dossier prévoit « un lot = une branche, une demande de fusion, une revue hu
 |---|---|
 | Branche | `claude/fervent-cerf-njewtz` |
 | Base (fin du lot L1) | `9136487` |
-| Lot L2 | `cbb080c` → `7e9015c` → `dab4318` → `d834ac3` (livraison + trois séries de corrections), puis `cf45531` (suppression de `src/auth.ts`, tests regroupés par thème) |
-| État vérifié | clone propre : lint, build, **186/186 tests sur PostgreSQL 16**, 182 + 4 ignorés sur PGlite ; **CI GitHub verte** (jobs `gateway` et `image` : construction, signature cosign, vérification) |
+| Lot L2 | `cbb080c` → `7e9015c` → `dab4318` → `d834ac3` (livraison + trois séries de corrections), `cf45531` (suppression de `src/auth.ts`, tests regroupés par thème), puis les corrections du **premier rapport de revue externe** (voir §7 et `docs/DECISIONS.md`, section « Revue externe du lot L2 ») |
+| État vérifié | lint, build, **200/200 tests sur PostgreSQL 16**, 196 + 4 ignorés sur PGlite ; contrôles statiques du realm et du Compose ; **CI GitHub** : jobs `gateway` et `image` (construction, signature cosign, vérification). Le realm Keycloak **n'a pas été réimporté** depuis la correction du constat bloquant |
 
 ```bash
 git fetch origin claude/fervent-cerf-njewtz && git checkout claude/fervent-cerf-njewtz
@@ -56,8 +56,8 @@ TEST_DATABASE_URL=postgres://utilisateur:motdepasse@localhost:5432/base_de_test 
 Chaque test crée son propre schéma : rien n'est partagé. Carte des fichiers : `services/gateway/test/README.md`.
 
 **Non testable sans infrastructure** (à faire par le relecteur ou l'équipe d'exploitation) :
-- importer `infra/keycloak/syfa-realm.json` dans un Keycloak réel et configurer le flux « step-up » du second facteur (`infra/keycloak/README.md`) ;
-- `make up` (démarrage complet) ;
+- **réimporter** `infra/keycloak/syfa-realm.json` (import de `69791cd` validé ; le fichier actuel a changé) puis dérouler la procédure du §4 de `infra/keycloak/README.md` : le flux « step-up » est posé par `configure-stepup.mjs` (`make up` le lance, `make keycloak-check` le contrôle) et **n'a jamais été exécuté contre un vrai Keycloak** ;
+- `make up` (démarre uniquement l'authentification ; `make up-full` ajoute FHIR, MinIO, Vault) ;
 - un fournisseur SMS réel (délai, coût, couverture MTN / Orange / Camtel).
 
 ---
@@ -161,6 +161,7 @@ Pour calibrer : ces points ont été reproduits, corrigés et couverts par un te
 | 3 | Smartphone enrôlable depuis l'extérieur · proxy sans `TRUST_PROXY` = ouverture silencieuse · inondation d'alertes SMS (aucun plafond d'appareils) |
 | 4 | **« Jamais d'appareil sans alerte » était faux** (sans numéro ou SMS en échec) · liste `TRUST_PROXY` erronée = ouverture silencieuse |
 | Vérification | 22 contrôles cassés volontairement un à un : 22 détectés par les tests |
+| **Revue externe n°1** | **Bloquant** : le realm ne s'importait pas (`unmanagedAttributePolicy: "DISABLED"` refusée par Keycloak) · **Majeur** : rejeu concurrent d'un jeton de rafraîchissement (session restée active) · **Majeur** : faute de frappe sur un booléen de sécurité (`treu`) désactivait la restriction · Réserve : SMS d'enrôlement envoyé dans la transaction · `make up` bloqué par une image optionnelle. Tous corrigés, reproduits et testés ; **le constat bloquant n'est vérifié que par des contrôles statiques tant que le realm n'est pas réimporté** |
 
 ### Limites connues, déjà notées (`docs/DECISIONS.md`)
 - Limite par adresse (30/min) à calibrer face aux réseaux mobiles qui partagent des adresses.
@@ -175,6 +176,8 @@ Pour calibrer : ces points ont été reproduits, corrigés et couverts par un te
 ## 8. Décisions à arbitrer par le porteur de projet
 
 À cocher avant la validation du lot (détail dans `docs/DECISIONS.md`).
+
+> Recommandations du relecteur externe : **garder** le PIN côté serveur, « un numéro, un dossier » jusqu'au lot L9, la restriction réseau et l'enrôlement à l'établissement (toute configuration invalide bloque le démarrage), le numéro professionnel obligatoire ; **confirmer les plafonds SMS avec le tarif réel**. La décision reste au porteur de projet.
 
 - [ ] **PIN vérifié côté serveur** (le dossier dit « PIN local ») : seul un compteur serveur est opposable ; PIN haché avec sel et poivre.
 - [ ] **Un téléphone = un compte** : la connexion patient exige exactement un dossier actif portant ce numéro. Cas du téléphone familial (parent + enfants) à trancher, avec le lot L9.
@@ -204,7 +207,7 @@ Un tableau par partie ; un problème = une ligne.
 
 1. Le relecteur remet son rapport (§9).
 2. Les corrections sont faites **avec un test qui échoue sans le correctif**, puis relues.
-3. **Le lot est validé** quand : (a) il ne reste aucun problème bloquant ni majeur ; (b) les décisions du §8 sont tranchées ; (c) la CI est verte ; (d) le realm Keycloak a été importé et le second facteur vérifié (jeton avec mot de passe seul refusé, jeton avec TOTP accepté).
+3. **Le lot est validé** quand : (a) il ne reste aucun problème bloquant ni majeur ; (b) les décisions du §8 sont tranchées ; (c) la CI est verte ; (d) le realm Keycloak a été **réimporté** et la procédure du §4 de `infra/keycloak/README.md` consignée à son §5 (version, résultats) et le second facteur vérifié : jeton avec mot de passe seul refusé, jeton avec TOTP accepté, `phone_number` non modifiable par l'utilisateur.
 4. Avant le pilote : **test d'intrusion indépendant** (onglet 6) et revue du lot par un expert externe (§10.5).
 
 | Validation | Nom | Date | Décision |

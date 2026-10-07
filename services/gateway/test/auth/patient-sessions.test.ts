@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
+import { REAL_PG } from '../identity/helpers.js';
 import { cleanup, enrol, makeEnv, OTP_REQUEST, OTP_VERIFY, PHONE, REFRESH, UNLOCK } from './helpers.js';
 
 afterAll(cleanup);
@@ -17,6 +18,23 @@ describe('sessions patient : rafraîchissement, inactivité, révocation', () =>
     expect(replay.statusCode).toBe(401);
     expect((await env.post(REFRESH, { refreshToken: next.refreshToken })).statusCode).toBe(401); // session révoquée
     expect((await env.get('/v1/me', next.accessToken)).statusCode).toBe(401);
+  });
+  it('présentation simultanée du même jeton (relecture avant rotation) : la session est révoquée, aucun des deux ne continue', async () => {
+    const env = await makeEnv({ AUTH_RATE_IP_PER_MINUTE: '100000', AUTH_OTP_MAX_PER_HOUR: '1000', AUTH_OTP_MAX_VERIFY_PER_HOUR: '1000' });
+    await env.addPatient();
+    for (let trial = 0; trial < (REAL_PG ? 15 : 3); trial++) {
+      env.clock.advance(61);
+      const e = await enrol(env, '2580');
+      const res = await Promise.all([REFRESH, REFRESH].map((u) => env.post(u, { refreshToken: e.refreshToken })));
+      const codes = res.map((r) => r.statusCode).sort();
+      expect(codes, `essai ${trial}`).toEqual([200, 401]); // un seul gagne, jamais deux
+      const winner = res.find((r) => r.statusCode === 200)!.json();
+      // le jeton déjà échangé a été présenté deux fois : vol probable → la session entière est fermée, gagnant compris
+      expect((await env.get('/v1/me', winner.accessToken)).statusCode, `accès du gagnant, essai ${trial}`).toBe(401);
+      expect((await env.post(REFRESH, { refreshToken: winner.refreshToken })).statusCode, `rafraîchissement du gagnant, essai ${trial}`).toBe(401);
+      expect((await env.db.query("SELECT 1 FROM auth_session WHERE id=$1 AND revoked_reason='refresh_reuse'", [JSON.parse(Buffer.from(winner.accessToken.split('.')[1], 'base64url').toString()).sid])).rows).toHaveLength(1);
+    }
+    expect((await env.db.query("SELECT 1 FROM auth_event WHERE type='refresh_reuse'")).rows.length).toBeGreaterThan(0);
   });
   it('inactivité de 30 minutes : la session se ferme ; une activité la prolonge', async () => {
     const env = await makeEnv({ AUTH_ACCESS_TOKEN_SECONDS: '900' });

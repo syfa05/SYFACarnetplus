@@ -13,7 +13,8 @@ Le projet vise à créer une plateforme nationale qui conserve l'historique méd
 ## Démarrage
 
 ```
-make up      # démarre l'environnement local (copie .env.example vers .env)
+make up      # authentification : identité, Keycloak, passerelle, faux SMS (génère .env et les clés de développement)
+make up-full # + serveur FHIR, stockage objet, coffre de clés (non nécessaires à l'authentification)
 make lint    # contrôle i18n + typage
 make test    # tests automatisés
 ```

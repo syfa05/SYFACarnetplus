@@ -50,29 +50,29 @@ export class SessionStore {
   }
 
   /** Enregistre une activité si — et seulement si — la session est encore valide. */
-  async touch(id: string, clientClass: ClientClass): Promise<SessionCheck> {
+  async touch(id: string, clientClass: ClientClass, q: Queryable = this.db): Promise<SessionCheck> {
     const now = this.now();
     const idleLimit = new Date(now.getTime() - this.config.idleSeconds[clientClass] * 1000).toISOString();
     const nowIso = now.toISOString();
-    const upd = await this.db.query(
+    const upd = await q.query(
       `UPDATE auth_session SET last_activity=$2
        WHERE id=$1 AND client_class=$3 AND revoked_at IS NULL AND last_activity > $4 AND (expires_at IS NULL OR expires_at > $2)
        RETURNING id`,
       [id, nowIso, clientClass, idleLimit],
     );
     if (upd.rows.length) return { ok: true };
-    const row = (await this.db.query<{ revoked_at: unknown; last_activity: Date; expires_at: Date | null }>(
+    const row = (await q.query<{ revoked_at: unknown; last_activity: Date; expires_at: Date | null }>(
       'SELECT revoked_at, last_activity, expires_at FROM auth_session WHERE id=$1 AND client_class=$2', [id, clientClass])).rows[0];
     if (!row) return { ok: false, reason: 'unknown' };
     if (row.revoked_at) return { ok: false, reason: 'revoked' };
     if (row.expires_at && new Date(row.expires_at) <= now) return { ok: false, reason: 'expired' };
-    await this.closeIfIdle(id, idleLimit);
+    await this.closeIfIdle(id, idleLimit, q);
     return { ok: false, reason: 'idle' };
   }
 
   /** Une session inactive trop longtemps est fermée pour de bon (aucun retour possible, même si l'horloge recule). */
-  private async closeIfIdle(id: string, idleLimit: string): Promise<void> {
-    await this.db.query(
+  private async closeIfIdle(id: string, idleLimit: string, q: Queryable = this.db): Promise<void> {
+    await q.query(
       "UPDATE auth_session SET revoked_at=$3, revoked_reason='idle' WHERE id=$1 AND revoked_at IS NULL AND last_activity <= $2",
       [id, idleLimit, this.now().toISOString()]);
   }

@@ -52,16 +52,6 @@
       }
     ]
   },
-  "requiredActions": [
-    {
-      "alias": "CONFIGURE_TOTP",
-      "name": "Configure OTP",
-      "providerId": "CONFIGURE_TOTP",
-      "enabled": true,
-      "defaultAction": true,
-      "priority": 10
-    }
-  ],
   "clients": [
     {
       "clientId": "syfa-web",
@@ -82,7 +72,9 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "client.session.idle.timeout": "900",
-        "access.token.lifespan": "300"
+        "access.token.lifespan": "300",
+        "default.acr.values": "2",
+        "minimum.acr.value": "2"
       },
       "protocolMappers": [
         {
@@ -128,7 +120,9 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "client.session.idle.timeout": "1800",
-        "access.token.lifespan": "300"
+        "access.token.lifespan": "300",
+        "default.acr.values": "2",
+        "minimum.acr.value": "2"
       },
       "protocolMappers": [
         {
@@ -185,7 +179,7 @@
         "subComponents": {},
         "config": {
           "kc.user.profile.config": [
-            "{\"attributes\": [{\"name\": \"username\", \"displayName\": \"${username}\", \"validations\": {\"length\": {\"min\": 3, \"max\": 255}, \"username-prohibited-characters\": {}, \"up-username-not-idn-homograph\": {}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"email\", \"displayName\": \"${email}\", \"validations\": {\"email\": {}, \"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}, {\"name\": \"firstName\", \"displayName\": \"${firstName}\", \"validations\": {\"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}, {\"name\": \"lastName\", \"displayName\": \"${lastName}\", \"validations\": {\"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}, {\"name\": \"phone_number\", \"displayName\": \"${phone_number}\", \"validations\": {\"pattern\": {\"pattern\": \"^2376[0-9]{8}$\", \"error-message\": \"phone_number\"}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}], \"unmanagedAttributePolicy\": \"DISABLED\"}"
+            "{\"attributes\": [{\"name\": \"username\", \"displayName\": \"${username}\", \"validations\": {\"length\": {\"min\": 3, \"max\": 255}, \"username-prohibited-characters\": {}, \"up-username-not-idn-homograph\": {}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\", \"user\"]}, \"multivalued\": false}, {\"name\": \"email\", \"displayName\": \"${email}\", \"validations\": {\"email\": {}, \"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}, {\"name\": \"firstName\", \"displayName\": \"${firstName}\", \"validations\": {\"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}, {\"name\": \"lastName\", \"displayName\": \"${lastName}\", \"validations\": {\"length\": {\"max\": 255}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}, {\"name\": \"phone_number\", \"displayName\": \"${phone_number}\", \"validations\": {\"pattern\": {\"pattern\": \"^2376[0-9]{8}$\", \"error-message\": \"phone_number\"}}, \"permissions\": {\"view\": [\"admin\", \"user\"], \"edit\": [\"admin\"]}, \"multivalued\": false}]}"
           ]
         }
       }
