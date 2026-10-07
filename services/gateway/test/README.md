@@ -14,6 +14,21 @@ Un fichier par thème ; l'identifiant de l'exigence (F-AUTH-01, F-ID-03…) ou d
 | `rate-limit.test.ts` | Limitation de débit, quotas, corps limités, réponses d'erreur |
 | `unit.test.ts` | Configuration, secrets, textes SMS |
 
+## Autorisation (`authz/`) — moteur, lot L3
+| Fichier | Contenu |
+|---|---|
+| `matrix.test.ts` | Onglet 2.2 **recopié du document** : chaque cellule (10 données × 8 rôles × 5 actions), autorisée et refusée ; cellules étoilées refermées sans leur condition ; champs et contraintes des cellules à parenthèses ; rôles sans colonne |
+| `conditions.test.ts` | C1 à C9, un groupe chacun (T-ACC-01 à 05, 09), export (onglet 2.5), systèmes, plusieurs rôles |
+| `admin.test.ts` | Onglet 2.3 recopié du document, portée (établissement / service), qui crée ou attribue quoi, contrôle de niveau supérieur, interdiction de se contrôler soi-même |
+
+## Organisation (`org/`) — établissements, personnel, lot L3
+| Fichier | Contenu |
+|---|---|
+| `accounts.test.ts` | Établissements, création en chaîne opérateur → directeur → personnel, rôles du jeton sans effet, attribution de rôles, désactivation immédiate (T-ACC-08), annuaire en panne |
+| `supervision.test.ts` | Contrôle par le niveau supérieur (opérateur / chef de district), refus de se contrôler soi-même (moteur et base), journal d'administration en ajout seul |
+| `access.test.ts` | Autorisation par appel direct à l'API (garde `requireAccess`), refus journalisés, listes de réseaux par établissement |
+| `directory.test.ts` | Adaptateur Keycloak contre un serveur HTTP **simulé**, configuration |
+
 ## Identité (`identity/`)
 | Fichier | Contenu |
 |---|---|

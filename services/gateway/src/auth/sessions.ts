@@ -88,6 +88,10 @@ export class SessionStore {
       [subject, this.now().toISOString(), reason, classes]);
   }
 
+  /** Révoque toutes les sessions d'un compte (désactivation : effet immédiat à la requête suivante). */
+  async revokeAll(q: Queryable, subject: string, reason: string): Promise<void> {
+    await q.query('UPDATE auth_session SET revoked_at=$2, revoked_reason=$3 WHERE subject=$1 AND revoked_at IS NULL', [subject, this.now().toISOString(), reason]);
+  }
   async revokeForDevice(q: Queryable, deviceId: string, reason: string): Promise<void> {
     await q.query('UPDATE auth_session SET revoked_at=$2, revoked_reason=$3 WHERE device_id=$1 AND revoked_at IS NULL', [deviceId, this.now().toISOString(), reason]);
   }

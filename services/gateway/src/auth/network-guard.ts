@@ -8,6 +8,21 @@ const PROXY_HEADERS = ['x-forwarded-for', 'forwarded', 'x-real-ip'];
 
 export type NetworkVerdict = 'ok' | 'denied' | 'proxy_untrusted';
 
+const staffPolicies = new Map<string, NetworkPolicy>();
+/** Réseaux de l'établissement du professionnel s'il en a déclaré, sinon liste globale de la passerelle. */
+function policyFor(req: FastifyRequest, rt: AuthRuntime): NetworkPolicy {
+  const own = req.staff?.allowedNetworks;
+  if (!own?.length) return rt.network;
+  const key = own.join(',');
+  let p = staffPolicies.get(key);
+  if (!p) {
+    if (staffPolicies.size > 1000) staffPolicies.clear();
+    p = new NetworkPolicy(own);
+    staffPolicies.set(key, p);
+  }
+  return p;
+}
+
 const trustedPolicies = new WeakMap<object, NetworkPolicy | null>();
 function trustedProxies(config: Config): NetworkPolicy | null {
   let p = trustedPolicies.get(config);
@@ -38,7 +53,7 @@ export function checkNetwork(req: FastifyRequest, config: Config, rt: AuthRuntim
   } else if (trusted?.allows(req.socket.remoteAddress)) {
     return 'proxy_untrusted';
   }
-  return rt.network.allows(req.ip) ? 'ok' : 'denied';
+  return policyFor(req, rt).allows(req.ip) ? 'ok' : 'denied';
 }
 
 /** Trace un refus réseau, au plus une fois par minute, par utilisateur et par motif (adresse non conservée). */

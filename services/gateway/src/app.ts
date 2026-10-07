@@ -2,10 +2,12 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { AuthError } from './auth/errors.js';
 import { authHook } from './auth/hook.js';
 import { patientAuthRoutes, rateLimitHook, sessionRoutes } from './auth/routes.js';
+import { orgRoutes } from './org/routes.js';
 import type { AuthRuntime } from './auth/runtime.js';
 import type { Config } from './config.js';
 
-export function buildApp(config: Config, rt: AuthRuntime): FastifyInstance {
+/** `extend` : enregistre les routes des services (données, cartes...) dans la zone authentifiée. */
+export function buildApp(config: Config, rt: AuthRuntime, extend?: (secured: FastifyInstance) => void): FastifyInstance {
   const app = Fastify({
     logger: false,
     trustProxy: config.trustProxy, // liste d'adresses de confiance ou faux (jamais « tous »)
@@ -43,7 +45,13 @@ export function buildApp(config: Config, rt: AuthRuntime): FastifyInstance {
     secured.addHook('onRequest', async (req, reply) => (req.url.startsWith('/v1/auth/') ? limit(req, reply) : undefined));
     secured.addHook('onRequest', authHook(config, rt));
     sessionRoutes(secured, rt, config);
-    secured.get('/v1/me', async (req) => ({ subject: req.subject, roles: req.roles, kind: req.principal?.kind }));
+    orgRoutes(secured, rt);
+    extend?.(secured);
+    secured.get('/v1/me', async (req) => ({
+      subject: req.subject, roles: req.roles, kind: req.principal?.kind,
+      // Droits effectifs (base de la passerelle) : distincts des rôles du jeton, qui ne donnent aucun droit.
+      ...(req.staff && { staff: { establishmentId: req.staff.establishmentId, roles: req.staff.roles.map(({ role, serviceId }) => ({ role, serviceId })) } }),
+    }));
   });
 
   return app;

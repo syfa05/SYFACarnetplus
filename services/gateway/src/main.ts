@@ -11,6 +11,7 @@ import { pgDb } from './db/pg.js';
 import { loadIdentityConfig } from './identity/config.js';
 import { FieldCrypto } from './identity/crypto.js';
 import { IdentityService } from './identity/service.js';
+import { loadDirectory, loadOrgConfig } from './org/config.js';
 
 const need = (v: string | undefined, name: string): string => {
   if (!v) throw new Error(`Variable d'environnement manquante : ${name}`);
@@ -21,7 +22,11 @@ const config = loadConfig();
 const db = pgDb(new pg.Pool({ connectionString: need(config.databaseUrl, 'DATABASE_URL') }));
 if (config.autoMigrate) await migrate(db, config.migrationsDir);
 
+const org = loadOrgConfig();
 const rt = createAuthRuntime({
+  directory: loadDirectory(config.oidcIssuer),
+  engine: org.engine,
+  homologatedClients: org.homologatedClients,
   auth: loadAuthConfig(),
   db,
   identity: new IdentityService(db, loadIdentityConfig(), FieldCrypto.fromEnv()),
