@@ -71,7 +71,22 @@ services:
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
     ports: ["8081:8081"]
+
+  # Configure le « step-up » (second facteur dans les jetons) une fois Keycloak démarré ; idempotent, voir infra/keycloak/README.md.
+  keycloak-setup:
+    image: node:22-alpine
+    working_dir: /app
+    volumes: [./keycloak:/app:ro]
+    depends_on: [keycloak]
+    environment:
+      KEYCLOAK_URL: http://keycloak:8081
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_WAIT_SECONDS: "180"
+    command: node configure-stepup.mjs
+    restart: "no"
 
   vault:
     profiles: [full]   # pas nécessaire à l'authentification (lots L6 et suivants) : `make up-full`

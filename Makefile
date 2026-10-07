@@ -1,6 +1,6 @@
 COMPOSE = docker compose --env-file .env -f infra/docker-compose.yml
 
-.PHONY: up up-full down reset-db test lint i18n verify-image
+.PHONY: up up-full down reset-db keycloak-stepup keycloak-check test lint i18n verify-image
 .env:
 	cp .env.example .env
 	@# Secrets de DÉVELOPPEMENT uniquement, générés localement (jamais commités).
@@ -14,6 +14,13 @@ up: .env
 # + serveur FHIR, stockage objet, coffre de clés (non nécessaires à l'authentification)
 up-full: .env
 	$(COMPOSE) --profile full up -d --build
+
+# (Re)configure le step-up de Keycloak, ou vérifie seulement (code de sortie 1 si non conforme)
+keycloak-stepup: .env
+	$(COMPOSE) run --rm keycloak-setup
+
+keycloak-check: .env
+	$(COMPOSE) run --rm keycloak-setup node configure-stepup.mjs --check
 
 down:
 	$(COMPOSE) --profile full down

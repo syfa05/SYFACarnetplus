@@ -52,16 +52,6 @@
       }
     ]
   },
-  "requiredActions": [
-    {
-      "alias": "CONFIGURE_TOTP",
-      "name": "Configure OTP",
-      "providerId": "CONFIGURE_TOTP",
-      "enabled": true,
-      "defaultAction": true,
-      "priority": 10
-    }
-  ],
   "clients": [
     {
       "clientId": "syfa-web",
@@ -82,7 +72,9 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "client.session.idle.timeout": "900",
-        "access.token.lifespan": "300"
+        "access.token.lifespan": "300",
+        "default.acr.values": "2",
+        "minimum.acr.value": "2"
       },
       "protocolMappers": [
         {
@@ -128,7 +120,9 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "client.session.idle.timeout": "1800",
-        "access.token.lifespan": "300"
+        "access.token.lifespan": "300",
+        "default.acr.values": "2",
+        "minimum.acr.value": "2"
       },
       "protocolMappers": [
         {

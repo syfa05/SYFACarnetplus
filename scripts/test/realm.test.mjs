@@ -39,7 +39,18 @@ test('realm : second facteur TOTP, blocage après échecs, mot de passe robuste'
   assert.equal(realm.otpPolicyDigits, 6);
   assert.equal(realm.bruteForceProtected, true);
   assert.match(realm.passwordPolicy, /length\(12\)/);
-  assert.ok(realm.requiredActions.some((a) => a.alias === 'CONFIGURE_TOTP' && a.defaultAction === true));
+});
+
+test('realm : ni flux ni actions requises déclarés (sinon Keycloak ne crée pas ceux par défaut), niveau 2 exigé par les clients', () => {
+  // RealmManager.setupAuthenticationFlows / setupRequiredActions (26.8.0) : les valeurs par défaut ne sont créées que s'il n'y en a AUCUNE.
+  // Le flux « step-up » et CONFIGURE_TOTP par défaut sont posés après l'import par infra/keycloak/configure-stepup.mjs.
+  assert.equal(realm.authenticationFlows, undefined);
+  assert.equal(realm.authenticatorConfig, undefined);
+  assert.equal(realm.requiredActions, undefined);
+  for (const c of realm.clients.filter((x) => ['syfa-web', 'syfa-android-pro'].includes(x.clientId))) {
+    assert.equal(c.attributes['default.acr.values'], '2', c.clientId);
+    assert.equal(c.attributes['minimum.acr.value'], '2', c.clientId);
+  }
 });
 
 test('Compose : image Keycloak épinglée (jamais « latest » ni sans étiquette) et services optionnels hors du démarrage par défaut', () => {
@@ -47,6 +58,7 @@ test('Compose : image Keycloak épinglée (jamais « latest » ni sans étiquett
   const kc = /image:\s*\$\{KEYCLOAK_IMAGE:-([^}]+)\}/.exec(compose);
   assert.ok(kc, 'KEYCLOAK_IMAGE avec valeur par défaut attendue');
   assert.match(kc[1], /^quay\.io\/keycloak\/keycloak:\d+\.\d+\.\d+$/);
+  assert.match(compose, /\n  keycloak-setup:[\s\S]*?configure-stepup\.mjs/, 'service keycloak-setup attendu');
   for (const svc of ['hapi-fhir', 'minio', 'vault', 'postgres-fhir']) {
     const block = new RegExp(`\\n  ${svc}:[\\s\\S]*?(?=\\n  [a-z-]+:\\n|\\nvolumes:)`).exec(compose)?.[0] ?? '';
     assert.match(block, /profiles:\s*\[full\]/, `${svc} devrait être dans le profil « full »`);

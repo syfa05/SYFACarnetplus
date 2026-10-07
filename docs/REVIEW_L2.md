@@ -56,7 +56,7 @@ TEST_DATABASE_URL=postgres://utilisateur:motdepasse@localhost:5432/base_de_test 
 Chaque test crée son propre schéma : rien n'est partagé. Carte des fichiers : `services/gateway/test/README.md`.
 
 **Non testable sans infrastructure** (à faire par le relecteur ou l'équipe d'exploitation) :
-- **réimporter** `infra/keycloak/syfa-realm.json` dans le Keycloak réel (le premier import a échoué, corrigé depuis) et configurer le flux « step-up » du second facteur (`infra/keycloak/README.md`) ;
+- **réimporter** `infra/keycloak/syfa-realm.json` (import de `69791cd` validé ; le fichier actuel a changé) puis dérouler la procédure du §4 de `infra/keycloak/README.md` : le flux « step-up » est posé par `configure-stepup.mjs` (`make up` le lance, `make keycloak-check` le contrôle) et **n'a jamais été exécuté contre un vrai Keycloak** ;
 - `make up` (démarre uniquement l'authentification ; `make up-full` ajoute FHIR, MinIO, Vault) ;
 - un fournisseur SMS réel (délai, coût, couverture MTN / Orange / Camtel).
 
@@ -207,7 +207,7 @@ Un tableau par partie ; un problème = une ligne.
 
 1. Le relecteur remet son rapport (§9).
 2. Les corrections sont faites **avec un test qui échoue sans le correctif**, puis relues.
-3. **Le lot est validé** quand : (a) il ne reste aucun problème bloquant ni majeur ; (b) les décisions du §8 sont tranchées ; (c) la CI est verte ; (d) le realm Keycloak a été **réimporté** (version consignée dans `infra/keycloak/README.md`) et le second facteur vérifié : jeton avec mot de passe seul refusé, jeton avec TOTP accepté, `phone_number` non modifiable par l'utilisateur.
+3. **Le lot est validé** quand : (a) il ne reste aucun problème bloquant ni majeur ; (b) les décisions du §8 sont tranchées ; (c) la CI est verte ; (d) le realm Keycloak a été **réimporté** et la procédure du §4 de `infra/keycloak/README.md` consignée à son §5 (version, résultats) et le second facteur vérifié : jeton avec mot de passe seul refusé, jeton avec TOTP accepté, `phone_number` non modifiable par l'utilisateur.
 4. Avant le pilote : **test d'intrusion indépendant** (onglet 6) et revue du lot par un expert externe (§10.5).
 
 | Validation | Nom | Date | Décision |
