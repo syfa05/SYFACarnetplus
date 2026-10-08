@@ -4,7 +4,7 @@ import type { DenialLog } from '../authz/denial.js';
 import { STAFF_ROLES, type Decision, type StaffRole } from '../authz/types.js';
 import { AuthError } from '../auth/errors.js';
 import type { AuthEvents } from '../auth/events.js';
-import { parseCidr } from '../auth/network.js';
+import { ipv6ToBigInt, parseCidr } from '../auth/network.js';
 import type { SessionStore } from '../auth/sessions.js';
 import type { Db, Queryable } from '../db/db.js';
 import { describeFailure } from '../identity/errors.js';
@@ -31,11 +31,25 @@ export function validateNetworks(list: unknown, min: { v4: number; v6: number } 
   if (!Array.isArray(list) || list.length > 50) return bad();
   return list.map((c) => {
     if (typeof c !== 'string') return bad();
+    let p: ReturnType<typeof parseCidr>;
     try {
-      const p = parseCidr(c);
-      if (p.prefix < (p.family === 'ipv4' ? min.v4 : min.v6)) return bad();
+      p = parseCidr(c);
     } catch {
       return bad();
+    }
+    if (p.family === 'ipv4') {
+      if (p.prefix < min.v4) bad();
+    } else {
+      if (p.prefix < min.v6) bad();
+      // Les adresses IPv4 « mappées » (::ffff:a.b.c.d) sont comparées comme des IPv4 : une plage IPv6 qui contient ::ffff:0:0/96
+      // autorise TOUT l'IPv4 ; une plage incluse dans ce bloc vaut une plage IPv4 de préfixe (préfixe − 96), soumise au minimum IPv4.
+      const host = (1n << BigInt(128 - p.prefix)) - 1n;
+      const lo = ipv6ToBigInt(p.net) & ~host;
+      const hi = lo | host;
+      const mappedLo = 0xffffn << 32n;
+      const mappedHi = mappedLo | 0xffffffffn;
+      if (lo <= mappedLo && hi >= mappedHi) bad();
+      if (lo >= mappedLo && hi <= mappedHi && p.prefix - 96 < min.v4) bad();
     }
     return c.trim();
   });

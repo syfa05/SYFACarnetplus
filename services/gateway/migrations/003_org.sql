@@ -69,6 +69,40 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 CREATE TRIGGER staff_role_guard BEFORE INSERT ON staff_role FOR EACH ROW EXECUTE FUNCTION staff_role_guard();
+-- Un rôle attribué ne se transforme pas (sinon un directeur deviendrait « opérateur » par un simple UPDATE, hors des contrôles
+-- ci-dessus) : seule la révocation, une fois, est possible ; jamais de suppression.
+CREATE FUNCTION staff_role_immutable() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'staff_role : suppression interdite (révoquer)'; END IF;
+  IF (NEW.id, NEW.staff_id, NEW.role, NEW.service_id, NEW.granted_by, NEW.granted_at)
+     IS DISTINCT FROM (OLD.id, OLD.staff_id, OLD.role, OLD.service_id, OLD.granted_by, OLD.granted_at) THEN
+    RAISE EXCEPTION 'staff_role : seule la révocation est modifiable';
+  END IF;
+  IF OLD.revoked_at IS NOT NULL AND (NEW.revoked_at IS DISTINCT FROM OLD.revoked_at OR NEW.revoked_by IS DISTINCT FROM OLD.revoked_by) THEN
+    RAISE EXCEPTION 'staff_role : rôle déjà révoqué';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER staff_role_immutable BEFORE UPDATE OR DELETE ON staff_role FOR EACH ROW EXECUTE FUNCTION staff_role_immutable();
+-- Rattachement d'un compte : identifiant fixe ; établissement et district ne changent pas sous des rôles actifs
+-- (la cohérence rôle national / établissement vérifiée à l'attribution ne doit pas être défaite après coup).
+CREATE FUNCTION staff_member_guard() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'staff_member : suppression interdite (désactiver)'; END IF;
+  IF NEW.id <> OLD.id OR NEW.sub <> OLD.sub THEN RAISE EXCEPTION 'staff_member : identifiant immuable'; END IF;
+  IF NEW.establishment_id IS DISTINCT FROM OLD.establishment_id
+     AND EXISTS (SELECT 1 FROM staff_role WHERE staff_id = OLD.id AND revoked_at IS NULL) THEN
+    RAISE EXCEPTION 'staff_member : établissement figé tant que des rôles sont actifs';
+  END IF;
+  IF NEW.district IS DISTINCT FROM OLD.district
+     AND EXISTS (SELECT 1 FROM staff_role WHERE staff_id = OLD.id AND revoked_at IS NULL AND role = 'chef_district') THEN
+    RAISE EXCEPTION 'staff_member : district figé tant que le rôle de chef de district est actif';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER staff_member_guard BEFORE UPDATE OR DELETE ON staff_member FOR EACH ROW EXECUTE FUNCTION staff_member_guard();
 -- Un même rôle, dans le même service, une seule fois à la fois.
 CREATE UNIQUE INDEX staff_role_active_idx ON staff_role (staff_id, role, COALESCE(service_id, '00000000-0000-0000-0000-000000000000'::uuid)) WHERE revoked_at IS NULL;
 

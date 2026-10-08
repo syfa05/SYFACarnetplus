@@ -107,3 +107,67 @@ describe('pureté : mêmes entrées, même décision (modes central et local)', 
     expect(before).toMatchObject({ allow: false, reason: 'release_delay' });
   });
 });
+
+describe('revue L3 (2e passe) · types stricts : une valeur « presque juste » n\'est jamais prise pour la bonne', () => {
+  it('« releasedEarly » doit être le booléen true : la chaîne « no », 1, un objet ne libèrent rien (C2)', () => {
+    for (const releasedEarly of ['no', 'false', '', 1, {}, [], 'true']) {
+      invalid(req(patient, 'consultations', 'C', { item: goodItem({ validatedAt: hoursAgo(1), releasedEarly: releasedEarly as never }) }));
+    }
+    expect(decide(req(patient, 'consultations', 'C', { item: goodItem({ validatedAt: hoursAgo(1), releasedEarly: true }) })).allow).toBe(true);
+    expect(decide(req(patient, 'consultations', 'C', { item: goodItem({ validatedAt: hoursAgo(1), releasedEarly: false }) })).allow).toBe(false);
+  });
+  it('autres champs de l\'élément : booléens, statut et auteur stricts', () => {
+    const bad = (item: object) => invalid(req(staff('medecin'), 'documents', 'C', { item: goodItem(item) }));
+    bad({ masked: 'false' }); bad({ confidential: 0 }); bad({ active: 'oui' }); bad({ currentCare: 1 }); bad({ delegatedDraft: 'x' });
+    bad({ status: 'VALIDE' }); bad({ status: 5 }); bad({ authorSub: 12 }); bad({ authorSub: '' }); bad({ examKind: 'autre' });
+  });
+  it('rôle sans serviceId (undefined) ≠ « sans service » : refus de forme, jamais un passe-droit du périmètre par service', () => {
+    const ep = openEpisode({ serviceScoped: true, serviceId: null });
+    const actor = (serviceId: unknown): Actor => ({ kind: 'staff', sub: 'u1', active: true, establishmentId: EST, roles: [{ role: 'medecin', serviceId } as never] });
+    invalid(req(actor(undefined), 'summary', 'C', { episode: ep }));
+    expect(decide(req(actor(null), 'summary', 'C', { episode: ep }))).toMatchObject({ allow: false, reason: 'service_mismatch' });
+    expect(decide(req(actor('cardio'), 'summary', 'C', { episode: openEpisode({ serviceScoped: true, serviceId: 'cardio' }) })).allow).toBe(true);
+    invalid(req(staff('medecin'), 'summary', 'C', { episode: openEpisode({ serviceScoped: 'oui' as never }) }));
+    invalid(req(staff('medecin'), 'summary', 'C', { episode: openEpisode({ serviceId: undefined as never }) }));
+  });
+  it('acteur sans identifiant : « même auteur » (undefined === undefined) impossible pour C6 et pour l\'exception C1', () => {
+    const noSub = { kind: 'staff', active: true, establishmentId: EST, roles: [{ role: 'medecin', serviceId: null }] } as unknown as Actor;
+    invalid(req(noSub, 'documents', 'C', { item: { masked: true } }));
+    invalid(req({ ...(noSub as object), sub: '' } as Actor, 'documents', 'C', { item: { masked: true } }));
+    invalid(req({ ...(noSub as object), sub: 7 } as unknown as Actor, 'consultations', 'M', { episode: openEpisode({ closedAt: hoursAgo(2) }), item: goodItem({ status: 'brouillon' }) }));
+    // un élément masqué sans auteur reste invisible pour un acteur identifié
+    expect(decide(req(staff('medecin'), 'documents', 'C', { item: { masked: true } }))).toMatchObject({ allow: false, reason: 'masked' });
+  });
+  it('acteurs : champs d\'identité, d\'état et de rattachement typés', () => {
+    invalid(req({ kind: 'patient', patientId: 5 } as unknown as Actor, 'summary', 'C'));
+    invalid(req({ kind: 'representant' } as unknown as Actor, 'summary', 'C'));
+    invalid(req({ kind: 'system', client: 'x', homologated: 'oui' } as unknown as Actor, 'summary', 'E', { export: { format: 'fhir' } }));
+    invalid(req({ ...(staff('medecin') as object), active: 'true' } as unknown as Actor, 'summary', 'C'));
+    invalid(req({ ...(staff('medecin') as object), establishmentId: undefined } as unknown as Actor, 'summary', 'C'));
+    invalid(req(staff('medecin'), 'summary', 'C', { representation: { personId: 'r', childId: PATIENT, active: 'oui', childAutonomous: false } as never }));
+    invalid(req(staff('medecin'), 'summary', 'C', { opposedProfessionals: ['a', 7] as never }));
+    // tableau de rôles creux
+    const holes = [, { role: 'medecin', serviceId: null }] as never;
+    invalid(req({ kind: 'staff', sub: 'u1', active: true, establishmentId: EST, roles: holes }, 'summary', 'C'));
+  });
+  it('configuration négative : refusée (un délai négatif rendrait tout visible)', () => {
+    const r = req(patient, 'consultations', 'C', { item: goodItem({ validatedAt: hoursAgo(0.01) }) });
+    expect(decide(r, { releaseDelayHours: -5, emergencyMotiveMinLength: 10 })).toMatchObject({ allow: false, reason: 'invalid_config' });
+    expect(decide(r, { releaseDelayHours: 72, emergencyMotiveMinLength: 0 })).toMatchObject({ allow: false, reason: 'invalid_config' });
+    expect(decide(r, { releaseDelayHours: 0, emergencyMotiveMinLength: 1 })).toMatchObject({ allow: true });
+  });
+  it('administration : acteur ou cible mal formés refusés (pas d\'exception), information absente = refus', () => {
+    const dir = staff('directeur_medical');
+    for (const bad of [{ roles: 'x' }, { roles: [1] }, null, 'x']) {
+      expect(() => decideAdmin({ actor: dir, action: 'role.assign', target: bad as never })).not.toThrow();
+      expect(decideAdmin({ actor: dir, action: 'role.assign', target: bad as never }).allow).toBe(false);
+    }
+    expect(decideAdmin({ actor: { kind: 'staff', sub: 'u', active: true, establishmentId: EST, roles: 'x' } as never, action: 'card.block', target: { establishmentId: EST } })).toMatchObject({ reason: 'invalid_input' });
+    expect(decideAdmin(null as never)).toMatchObject({ allow: false });
+    const e = { actorSub: 'dir-1', actorRoles: ['directeur_medical'] as StaffRole[], establishmentId: EST, district: null };
+    const op = staff('operateur', { establishmentId: null });
+    expect(decideAdmin({ actor: op, action: 'supervision.review', context: { entry: e } })).toMatchObject({ allow: false, reason: 'not_upper_level' }); // districtChiefAvailable absent
+    expect(decideAdmin({ actor: op, action: 'supervision.review', context: { entry: e, districtChiefAvailable: false } }).allow).toBe(true);
+    expect(decideAdmin({ actor: op, action: 'supervision.review', context: { entry: { ...e, actorRoles: 'x' as never } } })).toMatchObject({ reason: 'invalid_input' });
+  });
+});

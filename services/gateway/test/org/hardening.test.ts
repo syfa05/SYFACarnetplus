@@ -314,3 +314,75 @@ describe('revue L3 · adaptateur Keycloak', () => {
 });
 
 export type { OrgEnv };
+
+describe('revue L3 (2e passe) · majeur C : plages IPv6 « mappées IPv4 »', () => {
+  it('toute plage IPv6 qui contient ::ffff:0:0/96 (donc tout l\'IPv4) est refusée, sous toutes ses écritures', async () => {
+    const { validateNetworks } = await import('../../src/org/service.js');
+    for (const bad of ['::ffff:0:0/96', '::ffff:0.0.0.0/96', '0:0:0:0:0:ffff::/96', '0:0:0:0:0:ffff:0:0/96', '::ffff:0:0/95', '::ffff:0:0/64', '::/32', '::/40', '0::/32', '0:0:0:0:0:fffe::/80', '::ffff:0.0.0.0/100', '::ffff:0.0.0.0/103']) {
+      expect(() => validateNetworks([bad]), bad).toThrow();
+    }
+  });
+  it('plages IPv6 ordinaires et plages mappées assez étroites : acceptées, et le filtre se comporte comme annoncé', async () => {
+    const { validateNetworks } = await import('../../src/org/service.js');
+    const { NetworkPolicy } = await import('../../src/auth/network.js');
+    expect(validateNetworks(['2001:db8::/32', '2001:db8:1::/48', '::ffff:10.0.0.0/104', '::ffff:192.168.0.0/112'])).toHaveLength(4);
+    const p = new NetworkPolicy(['::ffff:10.0.0.0/104']);
+    expect(p.allows('10.1.2.3')).toBe(true);
+    expect(p.allows('11.0.0.1')).toBe(false);
+    expect(p.allows('8.8.8.8')).toBe(false);
+  });
+  it('par l\'API : refus 400, liste inchangée', async () => {
+    const { e, est } = await world();
+    const op = await e.tok('op-1');
+    expect((await e.call('PUT', `/v1/admin/establishments/${est}/networks`, op, { allowedNetworks: ['::ffff:0:0/96'] })).statusCode).toBe(400);
+    expect((await e.call('PUT', `/v1/admin/establishments/${est}/networks`, op, { allowedNetworks: ['10.0.0.0/8', '::ffff:0:0/95'] })).statusCode).toBe(400);
+    expect((await e.db.query('SELECT allowed_networks FROM establishment WHERE id=$1', [est])).rows[0]).toMatchObject({ allowed_networks: [] });
+    expect((await e.call('POST', '/v1/admin/establishments', op, { code: 'N-1', name: 'n', allowedNetworks: ['::ffff:0:0/96'] })).statusCode).toBe(400);
+  });
+});
+
+describe('revue L3 (2e passe) · majeur B : rôles et rattachements ne se transforment pas après coup', () => {
+  it('UPDATE d\'un rôle (role, service, compte) refusé : un directeur ne devient pas opérateur', async () => {
+    const { e, dir } = await world();
+    await expect(e.db.query("UPDATE staff_role SET role='operateur' WHERE staff_id=(SELECT id FROM staff_member WHERE sub=$1)", [dir])).rejects.toThrow(/seule la révocation/);
+    await expect(e.db.query("UPDATE staff_role SET staff_id=(SELECT id FROM staff_member WHERE sub='op-1') WHERE staff_id=(SELECT id FROM staff_member WHERE sub=$1)", [dir])).rejects.toThrow(/seule la révocation/);
+    await expect(e.db.query("UPDATE staff_role SET granted_by='x'")).rejects.toThrow(/seule la révocation/);
+    await expect(e.db.query('DELETE FROM staff_role')).rejects.toThrow(/suppression interdite/);
+  });
+  it('la révocation reste possible une fois ; un rôle révoqué ne revit pas', async () => {
+    const { e, est, dir } = await world();
+    const doc = await e.staff(dir, 'dr.a', est, [{ role: 'medecin' }]);
+    const rec = await e.rt.staff.bySub(doc);
+    expect((await e.call('DELETE', `/v1/admin/staff/${doc}/roles/${rec!.roles[0]!.id}`, await e.tok(dir))).statusCode).toBe(204);
+    await expect(e.db.query('UPDATE staff_role SET revoked_at=NULL, revoked_by=NULL WHERE id=$1', [rec!.roles[0]!.id])).rejects.toThrow(/déjà révoqué/);
+    await expect(e.db.query("UPDATE staff_role SET revoked_at=now() WHERE id=$1", [rec!.roles[0]!.id])).rejects.toThrow(/déjà révoqué/);
+  });
+  it('établissement d\'un compte figé tant qu\'il a des rôles actifs ; district figé pour un chef de district', async () => {
+    const { e, est, dir } = await world();
+    const b = await e.establishment('B-1');
+    await expect(e.db.query('UPDATE staff_member SET establishment_id=NULL WHERE sub=$1', [dir])).rejects.toThrow(/figé/);
+    await expect(e.db.query('UPDATE staff_member SET establishment_id=$2 WHERE sub=$1', [dir, b])).rejects.toThrow(/figé/);
+    await expect(e.db.query("UPDATE staff_member SET establishment_id=(SELECT id FROM establishment WHERE code='A-1') WHERE sub='op-1'")).rejects.toThrow(/figé/);
+    const chief = (await e.call('POST', '/v1/admin/staff', await e.tok('op-1'), { username: 'chef.q', phone: '237690000044', district: 'Q-1', roles: [{ role: 'chef_district' }] })).json() as { sub: string };
+    await expect(e.db.query("UPDATE staff_member SET district=NULL WHERE sub=$1", [chief.sub])).rejects.toThrow(/district figé/);
+    await expect(e.db.query("UPDATE staff_member SET district='Q-2' WHERE sub=$1", [chief.sub])).rejects.toThrow(/district figé/);
+    await expect(e.db.query('UPDATE staff_member SET sub=$2 WHERE sub=$1', [dir, 'autre'])).rejects.toThrow(/immuable/);
+    await expect(e.db.query('DELETE FROM staff_member')).rejects.toThrow(/suppression interdite/);
+    expect(est).toBeTruthy();
+  });
+  it('le déclencheur « district requis » protège aussi l\'insertion directe d\'un chef de district', async () => {
+    const { e } = await world();
+    await e.db.query("INSERT INTO staff_member (id, sub, status, created_at, created_by) VALUES (gen_random_uuid(), 'nat-1', 'active', now(), 't')");
+    await expect(e.db.query("INSERT INTO staff_role (id, staff_id, role, granted_by, granted_at) SELECT gen_random_uuid(), id, 'chef_district', 't', now() FROM staff_member WHERE sub='nat-1'")).rejects.toThrow(/district requis/);
+    await e.db.query("UPDATE staff_member SET district='D-1' WHERE sub='nat-1'");
+    await e.db.query("INSERT INTO staff_role (id, staff_id, role, granted_by, granted_at) SELECT gen_random_uuid(), id, 'chef_district', 't', now() FROM staff_member WHERE sub='nat-1'");
+  });
+  it('les opérations normales (désactivation, réactivation de l\'opérateur, rôles) continuent de fonctionner', async () => {
+    const { e, est, dir } = await world();
+    const doc = await e.staff(dir, 'dr.a', est, [{ role: 'medecin' }]);
+    expect((await e.call('POST', `/v1/admin/staff/${doc}/disable`, await e.tok(dir), { reason: 'x' })).statusCode).toBe(200);
+    await e.db.query("UPDATE staff_member SET status='disabled' WHERE sub='op-1'");
+    await bootstrapOperator(e.db, 'op-1', { reactivate: true });
+    expect((await e.rt.staff.bySub('op-1'))!.status).toBe('active');
+  });
+});

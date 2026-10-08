@@ -8,6 +8,21 @@ export function normalizeIp(ip: string): string | null {
   return isIP(candidate) ? candidate : null;
 }
 
+/** Adresse IPv6 (forme valide, éventuellement avec une fin IPv4 et « :: ») → entier de 128 bits. */
+export function ipv6ToBigInt(addr: string): bigint {
+  let a = addr.split('%')[0]!.trim();
+  const v4 = /(\d{1,3}(?:\.\d{1,3}){3})$/.exec(a);
+  if (v4) {
+    const o = v4[1]!.split('.').map(Number);
+    a = `${a.slice(0, -v4[1]!.length)}${((o[0]! << 8) | o[1]!).toString(16)}:${((o[2]! << 8) | o[3]!).toString(16)}`;
+  }
+  const [head, tail] = a.split('::');
+  const h = head ? head.split(':') : [];
+  const t = tail === undefined ? [] : tail ? tail.split(':') : [];
+  const groups = tail === undefined ? h : [...h, ...Array<string>(8 - h.length - t.length).fill('0'), ...t];
+  return groups.reduce((acc, g) => (acc << 16n) | BigInt(parseInt(g || '0', 16)), 0n);
+}
+
 export function parseCidr(cidr: string): { net: string; prefix: number; family: 'ipv4' | 'ipv6' } {
   const [net, p, extra] = cidr.trim().split('/');
   const family = net && isIP(net) === 4 ? 'ipv4' : net && isIP(net) === 6 ? 'ipv6' : null;

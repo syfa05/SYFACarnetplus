@@ -1,4 +1,4 @@
-import { own } from './engine.js';
+import { malformedActor, own } from './engine.js';
 import { allow, deny, type Actor, type Decision, type RoleGrant, type StaffRole } from './types.js';
 
 /** Actions d'administration (onglet 2, section 2.3). */
@@ -90,13 +90,18 @@ function upperLevel(actor: Extract<Actor, { kind: 'staff' }>, ctx: AdminContext 
   const isChief = actor.roles.some((g) => g.role === 'chef_district');
   const isOperator = actor.roles.some((g) => g.role === 'operateur');
   if (isChief && ctx?.actorDistrict && e.district !== null && ctx.actorDistrict === e.district) return allow();
-  if (isOperator && !ctx?.districtChiefAvailable) return allow();
+  if (isOperator && ctx?.districtChiefAvailable === false) return allow(); // information absente : refus
   return deny('not_upper_level');
 }
 
 export function decideAdmin(req: AdminRequest): Decision {
+  if (!req || typeof req !== 'object') return deny('invalid_input');
   const { actor, action, target, context } = req;
   if (!(ADMIN_ACTIONS as readonly unknown[]).includes(action) || !actor || typeof actor !== 'object') return deny('invalid_input');
+  if (typeof actor !== 'object' || malformedActor(actor)) return deny('invalid_input');
+  if (target !== undefined && (typeof target !== 'object' || target === null || (target.roles !== undefined && (!Array.isArray(target.roles) || target.roles.some((r) => typeof r !== 'string'))))) return deny('invalid_input');
+  const entry = context?.entry;
+  if (entry !== undefined && (typeof entry !== 'object' || entry === null || typeof entry.actorSub !== 'string' || !Array.isArray(entry.actorRoles))) return deny('invalid_input');
   if (actor.kind !== 'staff') return deny('staff_only');
   if (!actor.active) return deny('account_disabled');
   if (actor.roles.length === 0) return deny('no_role');

@@ -11,23 +11,48 @@ export const own = <T>(table: Record<string, T> | Partial<Record<string, T>>, ke
 const validDate = (d: unknown): d is Date => d instanceof Date && Number.isFinite(d.getTime());
 const ACTOR_KINDS: readonly string[] = ['patient', 'representant', 'accompagnant', 'staff', 'system'];
 
+const isStr = (v: unknown): v is string => typeof v === 'string' && v !== '';
+const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
+const optBool = (v: unknown) => v === undefined || isBool(v);
+const STATUSES: readonly unknown[] = ['brouillon', 'en_attente', 'valide', 'renvoye'];
+
+export function malformedActor(a: Actor): boolean {
+  switch (a.kind) {
+    case 'patient': return !isStr(a.patientId);
+    case 'representant':
+    case 'accompagnant': return !isStr(a.personId);
+    case 'system': return !isStr(a.client) || !isBool(a.homologated);
+    case 'staff':
+      return !isStr(a.sub) || !isBool(a.active) || !(a.establishmentId === null || isStr(a.establishmentId)) || !Array.isArray(a.roles)
+        // `serviceId` absent (undefined) n'est PAS « sans service » : null ou un identifiant, rien d'autre.
+        || a.roles.length !== Object.keys(a.roles).length || a.roles.some((g) => !g || typeof g !== 'object' || !isStr(g.role) || !(g.serviceId === null || isStr(g.serviceId)));
+  }
+}
+
 /**
  * Forme de la requête. Le moteur est appelé avec des valeurs qui viennent parfois d'une route, d'un JSON ou d'une
- * synchronisation : tout ce qui n'a pas EXACTEMENT le type attendu est refusé (jamais une comparaison silencieusement fausse).
+ * synchronisation : tout ce qui n'a pas EXACTEMENT le type attendu est refusé (jamais une comparaison silencieusement fausse :
+ * une chaîne « no » n'est pas `false`, un champ absent des deux côtés n'est pas « le même auteur »).
  */
 function malformed(req: AccessRequest): boolean {
   const c = req?.context as AccessRequest['context'] | undefined;
-  if (!c || !req.actor || !ACTOR_KINDS.includes(req.actor.kind)) return true;
+  if (!c || !req.actor || !ACTOR_KINDS.includes(req.actor.kind) || malformedActor(req.actor)) return true;
   if (!(ACTIONS as readonly unknown[]).includes(req.action) || !(DATA_TYPES as readonly unknown[]).includes(req.data)) return true;
   if (typeof req.patientId !== 'string' || req.patientId === '' || !validDate(c.now)) return true;
-  if (req.actor.kind === 'staff' && (!Array.isArray(req.actor.roles) || req.actor.roles.some((g) => typeof g?.role !== 'string'))) return true;
   const ep = c.episode;
-  if (ep !== undefined && (typeof ep !== 'object' || ep === null || !validDate(ep.expiresAt) || (ep.closedAt != null && !validDate(ep.closedAt)) || typeof ep.establishmentId !== 'string')) return true;
+  if (ep !== undefined && (typeof ep !== 'object' || ep === null || !validDate(ep.expiresAt) || (ep.closedAt != null && !validDate(ep.closedAt))
+    || !isStr(ep.establishmentId) || !(ep.serviceId === null || isStr(ep.serviceId)) || !isBool(ep.serviceScoped))) return true;
   const it = c.item;
-  if (it !== undefined && (typeof it !== 'object' || it === null || (it.validatedAt !== undefined && !validDate(it.validatedAt)))) return true;
+  if (it !== undefined && (typeof it !== 'object' || it === null || (it.validatedAt !== undefined && !validDate(it.validatedAt))
+    || !optBool(it.masked) || !optBool(it.confidential) || !optBool(it.releasedEarly) || !optBool(it.active) || !optBool(it.currentCare) || !optBool(it.delegatedDraft)
+    || (it.status !== undefined && !STATUSES.includes(it.status)) || (it.authorSub !== undefined && !isStr(it.authorSub))
+    || (it.examKind !== undefined && it.examKind !== 'prescrit' && it.examKind !== 'resultat'))) return true;
+  const rep = c.representation;
+  if (rep !== undefined && (typeof rep !== 'object' || rep === null || !isStr(rep.personId) || !isStr(rep.childId) || !isBool(rep.active) || !isBool(rep.childAutonomous))) return true;
   if (c.emergency !== undefined && (typeof c.emergency !== 'object' || c.emergency === null || typeof c.emergency.motive !== 'string')) return true;
-  if (c.export !== undefined && (typeof c.export !== 'object' || c.export === null || (c.export.format !== 'pdf' && c.export.format !== 'fhir'))) return true;
-  if (c.opposedProfessionals !== undefined && !Array.isArray(c.opposedProfessionals)) return true;
+  if (c.export !== undefined && (typeof c.export !== 'object' || c.export === null || (c.export.format !== 'pdf' && c.export.format !== 'fhir') || (c.export.bulk !== undefined && !isBool(c.export.bulk)))) return true;
+  if (c.opposedProfessionals !== undefined && (!Array.isArray(c.opposedProfessionals) || c.opposedProfessionals.some((x) => !isStr(x)))) return true;
+  if (c.scopeEstablishmentId !== undefined && !isStr(c.scopeEstablishmentId)) return true;
   return false;
 }
 
@@ -47,7 +72,7 @@ const DATA_ROLES: ReadonlySet<string> = new Set<DataRole>(['secretaire', 'infirm
  */
 export function decide(req: AccessRequest, cfg: EngineConfig = DEFAULT_ENGINE_CONFIG): Decision {
   if (malformed(req)) return deny('invalid_input');
-  if (!Number.isFinite(cfg?.releaseDelayHours) || !Number.isFinite(cfg?.emergencyMotiveMinLength)) return deny('invalid_config');
+  if (!(cfg?.releaseDelayHours >= 0) || !Number.isFinite(cfg.releaseDelayHours) || !(cfg.emergencyMotiveMinLength >= 1) || !Number.isFinite(cfg.emergencyMotiveMinLength)) return deny('invalid_config');
   const { actor, context } = req;
   // Export de masse : interdit à tous les rôles (onglet 2.5) ; seules les statistiques anonymisées vers DHIS2 existent.
   if (context.export?.bulk) return deny('bulk_export_forbidden');
@@ -117,7 +142,7 @@ function evalCell(cell: Cell | undefined, req: AccessRequest, cfg: EngineConfig,
   if (side === 'patient' && C2_DATA.includes(req.data)) {
     if (!item || item.status !== 'valide' || !item.validatedAt) return deny('not_validated', 'C2');
     const visibleAt = item.validatedAt.getTime() + cfg.releaseDelayHours * 3_600_000;
-    if (!item.releasedEarly && req.context.now.getTime() < visibleAt) return deny('release_delay', 'C2');
+    if (item.releasedEarly !== true && req.context.now.getTime() < visibleAt) return deny('release_delay', 'C2');
     used.push('C2');
   }
 
