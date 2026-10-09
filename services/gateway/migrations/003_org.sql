@@ -29,6 +29,8 @@ CREATE TABLE staff_member (
   status           text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
   -- Écart avec le fournisseur d'identité à rattraper (reconcileDirectory) : activation ou désactivation distante échouée.
   directory_sync   text CHECK (directory_sync IN ('enable','disable')),
+  directory_attempts integer NOT NULL DEFAULT 0,   -- tentatives de rattrapage échouées (temporisation croissante)
+  directory_last_try timestamptz,
   created_at       timestamptz NOT NULL,
   created_by       text NOT NULL,
   disabled_at      timestamptz,
@@ -163,10 +165,11 @@ CREATE TABLE access_denial (
 CREATE INDEX access_denial_at_idx ON access_denial (at);
 CREATE INDEX access_denial_actor_idx ON access_denial (actor_sub, at);
 CREATE INDEX access_denial_patient_idx ON access_denial (patient_id) WHERE patient_id IS NOT NULL;
--- Ajout seul ; seule la purge de rétention (fonction ci-dessous, avant une date limite) peut supprimer des lignes.
+-- Ajout seul. Seules les lignes de plus de 90 jours (rétention minimale, plancher fixe) peuvent être supprimées, et
+-- seulement par la fonction de purge ci-dessous : le drapeau de purge ne suffit pas à effacer une ligne récente.
 CREATE FUNCTION access_denial_guard() RETURNS trigger AS $$
 BEGIN
-  IF TG_OP = 'DELETE' AND current_setting('syfa.purge', true) = 'on' THEN RETURN OLD; END IF;
+  IF TG_OP = 'DELETE' AND current_setting('syfa.purge', true) = 'on' AND OLD.at < now() - interval '90 days' THEN RETURN OLD; END IF;
   RAISE EXCEPTION '% est en ajout seul', TG_TABLE_NAME;
 END;
 $$ LANGUAGE plpgsql;
@@ -175,6 +178,7 @@ CREATE TRIGGER access_denial_no_truncate BEFORE TRUNCATE ON access_denial FOR EA
 CREATE FUNCTION purge_access_denial(cutoff timestamptz) RETURNS bigint AS $$
 DECLARE n bigint;
 BEGIN
+  IF cutoff > now() - interval '90 days' THEN RAISE EXCEPTION 'purge_access_denial : rétention minimale de 90 jours'; END IF;
   PERFORM set_config('syfa.purge', 'on', true);
   DELETE FROM access_denial WHERE at < cutoff;
   GET DIAGNOSTICS n = ROW_COUNT;
@@ -182,3 +186,5 @@ BEGIN
   RETURN n;
 END;
 $$ LANGUAGE plpgsql;
+-- À l'exploitation : n'accorder EXECUTE qu'au rôle de maintenance (le rôle applicatif n'a pas à purger lui-même hors tâche planifiée).
+REVOKE ALL ON FUNCTION purge_access_denial(timestamptz) FROM PUBLIC;

@@ -87,7 +87,8 @@ describe('configuration', () => {
     await expect(new UnconfiguredDirectory().createUser()).rejects.toMatchObject({ code: 'unavailable' });
   });
   it('règles paramétrables, lues strictement', () => {
-    expect(loadOrgConfig({})).toEqual({ engine: { releaseDelayHours: 72, emergencyMotiveMinLength: 10 }, homologatedClients: [], minNetworkPrefix: { v4: 8, v6: 32 }, denialLog: { perWindow: 5, windowSeconds: 60 } });
+    expect(loadOrgConfig({})).toEqual({ engine: { releaseDelayHours: 72, emergencyMotiveMinLength: 10 }, homologatedClients: [], minNetworkPrefix: { v4: 8, v6: 32 }, denialLog: { perWindow: 5, windowSeconds: 60 }, reconcile: { intervalSeconds: 60, batch: 200 }, reviews: { pageMax: 100, maxScan: 5000 }, denialRetentionDays: 90 });
+    expect(() => loadOrgConfig({ ORG_DENIAL_RETENTION_DAYS: '30' })).toThrow(); // plancher de 90 jours
     expect(loadOrgConfig({ ORG_RELEASE_DELAY_HOURS: '48', ORG_HOMOLOGATED_CLIENTS: 'dme-1, dme-2' })).toMatchObject({ engine: { releaseDelayHours: 48 }, homologatedClients: ['dme-1', 'dme-2'] });
     expect(() => loadOrgConfig({ ORG_RELEASE_DELAY_HOURS: '72h' })).toThrow();
     expect(() => loadOrgConfig({ ORG_RELEASE_DELAY_HOURS: '-1' })).toThrow();

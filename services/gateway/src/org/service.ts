@@ -8,6 +8,7 @@ import { ipv6ToBigInt, parseCidr } from '../auth/network.js';
 import type { SessionStore } from '../auth/sessions.js';
 import type { Db, Queryable } from '../db/db.js';
 import { describeFailure } from '../identity/errors.js';
+import type { OrgConfig } from './config.js';
 import { DirectoryError, type DirectoryPort } from './directory.js';
 import { toActor, type StaffRecord, type StaffRepository } from './repository.js';
 
@@ -71,9 +72,11 @@ export class OrgService {
     private readonly sessions: SessionStore,
     private readonly events: AuthEvents,
     private readonly denials: DenialLog,
-    private readonly minNetworkPrefix: { v4: number; v6: number },
+    private readonly cfg: Pick<OrgConfig, 'minNetworkPrefix' | 'reconcile' | 'reviews'>,
     private readonly now: () => Date,
   ) {}
+
+  private reconciling?: Promise<{ done: number; failed: number }>;
 
   // -- autorisation -------------------------------------------------------------------------------------------
 
@@ -98,12 +101,24 @@ export class OrgService {
       [randomUUID(), this.now().toISOString(), actor.sub, roles, action, establishmentId, district, o.targetSub ?? null, JSON.stringify(o.details ?? {}), review]);
   }
 
+  /**
+   * Compte visé par une action : un compte inconnu et un compte hors de portée donnent la MÊME réponse (403, journalisée) à
+   * quiconque n'est pas opérateur — on ne peut pas sonder l'existence des comptes. L'opérateur, qui voit tout, reçoit 404.
+   */
+  private async loadTarget(actor: StaffRecord, sub: string, action: AdminAction): Promise<StaffRecord> {
+    const t = typeof sub === 'string' && sub.length <= 128 ? await this.repo.bySub(sub) : null;
+    if (t) return t;
+    if (actor.roles.some((r) => r.role === 'operateur')) throw new AuthError('not_found', 404);
+    await this.denials.record({ actorSub: actor.sub, actorKind: 'staff', establishmentId: actor.establishmentId, action: 'admin', data: action, reason: 'unknown_target' });
+    throw new AuthError('forbidden', 403);
+  }
+
   // -- établissements et services ----------------------------------------------------------------------------
 
   async createEstablishment(actor: StaffRecord, i: { code: string; name: string; district?: string; allowedNetworks?: string[] }): Promise<{ id: string }> {
     await this.authorize(actor, 'establishment.manage');
     if (!CODE.test(i.code) || !i.name?.trim() || i.name.length > 120 || (i.district?.length ?? 0) > 80) bad();
-    const networks = validateNetworks(i.allowedNetworks ?? [], this.minNetworkPrefix);
+    const networks = validateNetworks(i.allowedNetworks ?? [], this.cfg.minNetworkPrefix);
     const id = randomUUID();
     try {
       await this.db.transaction(async (tx) => {
@@ -120,7 +135,7 @@ export class OrgService {
 
   async setNetworks(actor: StaffRecord, establishmentId: string, networks: unknown): Promise<void> {
     await this.authorize(actor, 'establishment.manage');
-    const list = validateNetworks(networks, this.minNetworkPrefix);
+    const list = validateNetworks(networks, this.cfg.minNetworkPrefix);
     if (!UUID.test(establishmentId)) bad();
     await this.db.transaction(async (tx) => {
       const r = await tx.query('UPDATE establishment SET allowed_networks=$2 WHERE id=$1 RETURNING id', [establishmentId, list]);
@@ -257,13 +272,17 @@ export class OrgService {
         await this.directory.setEnabled(sub, wantEnabled);
         if (!wantEnabled) await this.directory.logout(sub);
       } catch (err) {
-        await this.events.record(this.db, 'staff_directory_sync_failed', sub, { cause: describeFailure(err), souhaite: wantEnabled ? 'enable' : 'disable' });
-        await this.db.query('UPDATE staff_member SET directory_sync=$2 WHERE sub=$1', [sub, wantEnabled ? 'enable' : 'disable']);
+        const r = await this.db.query<{ directory_attempts: number }>(
+          'UPDATE staff_member SET directory_sync=$2, directory_attempts=directory_attempts+1, directory_last_try=$3 WHERE sub=$1 RETURNING directory_attempts',
+          [sub, wantEnabled ? 'enable' : 'disable', this.now().toISOString()]);
+        // Journal d'événements à échelle logarithmique (1re, 2e, 4e, 8e... tentative) : un échec permanent ne le remplit pas.
+        const n = r.rows[0]?.directory_attempts ?? 1;
+        if ((n & (n - 1)) === 0) await this.events.record(this.db, 'staff_directory_sync_failed', sub, { cause: describeFailure(err), souhaite: wantEnabled ? 'enable' : 'disable', tentatives: n });
         return false;
       }
       const again = await this.repo.bySub(sub);
       if (again && again.status === rec.status) {
-        await this.db.query('UPDATE staff_member SET directory_sync=NULL WHERE sub=$1', [sub]);
+        await this.db.query('UPDATE staff_member SET directory_sync=NULL, directory_attempts=0, directory_last_try=NULL WHERE sub=$1', [sub]);
         return true;
       }
     }
@@ -277,18 +296,40 @@ export class OrgService {
     return this.reconcilePending();
   }
 
-  /** Rattrape les écarts avec le fournisseur d'identité (tâche périodique de la passerelle). Retourne le nombre de comptes alignés. */
-  async reconcilePending(): Promise<{ done: number; failed: number }> {
-    const { rows } = await this.db.query<{ sub: string }>('SELECT sub FROM staff_member WHERE directory_sync IS NOT NULL ORDER BY created_at LIMIT 200');
+  /**
+   * Rattrape les écarts avec le fournisseur d'identité (tâche périodique de la passerelle). Un seul passage à la fois dans
+   * ce processus (un passage lent n'est pas doublé par le suivant) ; les comptes en échec sont réessayés avec une temporisation
+   * croissante (2^n minutes, au plus 1 h), donc un compte durablement en échec ne fait pas attendre les autres.
+   */
+  reconcilePending(): Promise<{ done: number; failed: number }> {
+    if (this.reconciling) return this.reconciling;
+    this.reconciling = this.runReconcile().finally(() => { this.reconciling = undefined; });
+    return this.reconciling;
+  }
+
+  private async runReconcile(): Promise<{ done: number; failed: number }> {
+    const nowIso = this.now().toISOString();
+    const { rows } = await this.db.query<{ sub: string }>(
+      `SELECT sub FROM staff_member
+        WHERE directory_sync IS NOT NULL
+          AND (directory_last_try IS NULL OR directory_last_try + LEAST(power(2, directory_attempts), 60) * interval '1 minute' <= $1::timestamptz)
+        ORDER BY directory_last_try NULLS FIRST, created_at LIMIT $2`, [nowIso, this.cfg.reconcile.batch]);
     let done = 0, failed = 0;
     for (const r of rows) (await this.syncDirectory(r.sub)) ? done++ : failed++;
     return { done, failed };
   }
 
+  /** Purge du journal des refus au-delà de la rétention (jamais moins de 90 jours : plancher imposé aussi par la base). */
+  async purgeDenials(retentionDays: number): Promise<number> {
+    if (!Number.isInteger(retentionDays) || retentionDays < 90) throw new Error('rétention minimale : 90 jours');
+    const cutoff = new Date(this.now().getTime() - retentionDays * 86_400_000).toISOString();
+    const r = await this.db.query<{ n: string }>('SELECT purge_access_denial($1::timestamptz) AS n', [cutoff]);
+    return Number(r.rows[0]!.n);
+  }
+
   /** Reprend l'activation chez le fournisseur d'identité d'un compte créé localement (idempotent). */
   async activate(actor: StaffRecord, sub: string): Promise<void> {
-    const t = await this.repo.bySub(sub);
-    if (!t) throw new AuthError('not_found', 404);
+    const t = await this.loadTarget(actor, sub, 'account.create');
     await this.authorize(actor, 'account.create', { establishmentId: t.establishmentId, roles: t.roles.map((r) => r.role), staffSub: sub });
     if (t.status !== 'active') throw new AuthError('conflict', 409); // un compte désactivé ne se réactive pas par ici
     if (!(await this.syncDirectory(sub))) throw new AuthError('directory_unavailable', 502);
@@ -296,8 +337,7 @@ export class OrgService {
 
   /** Nouveau mot de passe temporaire (perdu, ou compte dont l'activation avait échoué). Renvoyé une seule fois, jamais conservé. */
   async resetTemporaryPassword(actor: StaffRecord, sub: string): Promise<{ temporaryPassword: string }> {
-    const t = await this.repo.bySub(sub);
-    if (!t) throw new AuthError('not_found', 404);
+    const t = await this.loadTarget(actor, sub, 'account.create');
     await this.authorize(actor, 'account.create', { establishmentId: t.establishmentId, roles: t.roles.map((r) => r.role), staffSub: sub });
     if (t.status !== 'active') throw new AuthError('conflict', 409);
     const temporaryPassword = tempPassword();
@@ -312,9 +352,9 @@ export class OrgService {
 
   async assignRole(actor: StaffRecord, sub: string, r: RoleInput): Promise<{ id: string }> {
     const [role] = this.shapeRoles([r]);
-    const t = await this.repo.bySub(sub);
-    if (!t || t.status !== 'active') throw new AuthError('not_found', 404);
+    const t = await this.loadTarget(actor, sub, 'role.assign');
     await this.authorize(actor, 'role.assign', { establishmentId: t.establishmentId, serviceId: role!.serviceId, staffSub: sub, roles: [role!.role] });
+    if (t.status !== 'active') throw new AuthError('conflict', 409);
     // Comptes nationaux (sans établissement) : rôles nationaux seulement, et inversement (la base le garantit aussi).
     if (NATIONAL.includes(role!.role) !== (t.establishmentId === null) || (role!.role === 'chef_district' && !t.district)) bad();
     await this.checkServices(this.db, t.establishmentId, [role!]);
@@ -332,9 +372,11 @@ export class OrgService {
   }
 
   async revokeRole(actor: StaffRecord, sub: string, roleId: string): Promise<void> {
-    const t = await this.repo.bySub(sub);
-    const g = UUID.test(roleId) ? t?.roles.find((r) => r.id === roleId) : undefined;
-    if (!t || !g) throw new AuthError('not_found', 404);
+    const t = await this.loadTarget(actor, sub, 'role.assign');
+    // Autorisation sur les rôles ACTUELS du compte avant de dire si le rôle demandé existe (pas de sondage des rôles d'autrui).
+    await this.authorize(actor, 'role.assign', { establishmentId: t.establishmentId, staffSub: sub, roles: t.roles.map((r) => r.role) });
+    const g = UUID.test(roleId) ? t.roles.find((r) => r.id === roleId) : undefined;
+    if (!g) throw new AuthError('not_found', 404);
     await this.authorize(actor, 'role.assign', { establishmentId: t.establishmentId, serviceId: g.serviceId, staffSub: sub, roles: [g.role] });
     await this.db.transaction(async (tx) => {
       await tx.query('UPDATE staff_role SET revoked_at=$2, revoked_by=$3 WHERE id=$1 AND revoked_at IS NULL', [roleId, this.now().toISOString(), actor.sub]);
@@ -349,8 +391,7 @@ export class OrgService {
    * reste complet.
    */
   async disableStaff(actor: StaffRecord, sub: string, reason: string): Promise<{ directory: 'ok' | 'pending' }> {
-    const t = await this.repo.bySub(sub);
-    if (!t) throw new AuthError('not_found', 404);
+    const t = await this.loadTarget(actor, sub, 'account.disable');
     await this.authorize(actor, 'account.disable', { establishmentId: t.establishmentId, staffSub: sub, roles: t.roles.map((r) => r.role) });
     if (!reason?.trim() || reason.length > 200) bad();
     const nowIso = this.now().toISOString();
@@ -384,15 +425,19 @@ export class OrgService {
    * (curseur `at|id`). Les lignes que l'acteur ne peut pas contrôler sont sautées, jusqu'à 5 000 lignes examinées par appel.
    */
   async pendingReviews(actor: StaffRecord, opts: { limit?: number; cursor?: string } = {}): Promise<ReviewPage> {
-    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 100);
-    const m = opts.cursor === undefined ? null : /^(\d{4}-[\d\-T:.]+Z)\|([0-9a-f-]{36})$/i.exec(opts.cursor);
-    if (opts.cursor !== undefined && !m) bad();
+    if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > this.cfg.reviews.pageMax)) bad();
+    const limit = opts.limit ?? Math.min(50, this.cfg.reviews.pageMax);
+    // Curseur : date exactement au format ISO (aller-retour vérifié) et identifiant strict ; sinon 400 (jamais d'erreur de la base).
+    const m = opts.cursor === undefined ? null : /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(opts.cursor);
+    if (opts.cursor !== undefined && (!m || !Number.isFinite(Date.parse(m[1]!)) || new Date(m[1]!).toISOString() !== m[1])) bad();
+    // Seuls le chef de district et l'opérateur contrôlent : pour les autres, rien à examiner.
+    if (!actor.roles.some((r) => r.role === 'chef_district' || r.role === 'operateur')) return { items: [], next: null };
     let after: { at: string; id: string } | null = m ? { at: m[1]!, id: m[2]! } : null;
     const cache = new Map<string, boolean>();
     const items: ReviewItem[] = [];
     let scanned = 0;
     let next: string | null = null;
-    while (items.length < limit && scanned < 5000) {
+    while (items.length < limit && scanned < this.cfg.reviews.maxScan) {
       const { rows } = await this.db.query<{ id: string; at: Date; actor_sub: string; actor_roles: string[]; action: string; establishment_id: string | null; district: string | null; target_sub: string | null }>(
         `SELECT id, at, actor_sub, actor_roles, action, establishment_id, district, target_sub FROM admin_action
           WHERE review_required AND reviewed_by IS NULL ${after ? 'AND (at, id) < ($1::timestamptz, $2::uuid)' : ''}
@@ -408,7 +453,7 @@ export class OrgService {
       }
       if (next || rows.length < 200) break;
     }
-    if (!next && scanned >= 5000 && after) next = `${after.at}|${after.id}`; // examen interrompu : l'appelant continue
+    if (!next && scanned >= this.cfg.reviews.maxScan && after) next = `${after.at}|${after.id}`; // examen interrompu : l'appelant continue
     return { items, next };
   }
 

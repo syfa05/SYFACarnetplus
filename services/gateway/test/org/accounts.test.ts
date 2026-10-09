@@ -196,7 +196,8 @@ describe('désactivation immédiate (T-ACC-08)', () => {
     const t1 = await e.tok(d1);
     expect((await e.call('POST', `/v1/admin/staff/${d1}/disable`, t1, { reason: 'moi' })).statusCode).toBe(403);
     expect((await e.call('POST', `/v1/admin/staff/${d2}/disable`, t1, { reason: 'pair' })).statusCode).toBe(403);
-    expect((await e.call('POST', '/v1/admin/staff/inconnu/disable', t1, { reason: 'x' })).statusCode).toBe(404);
+    expect((await e.call('POST', '/v1/admin/staff/inconnu/disable', t1, { reason: 'x' })).statusCode).toBe(403); // inconnu = hors portée : indiscernable
+    expect((await e.call('POST', '/v1/admin/staff/inconnu/disable', await e.tok('op-1'), { reason: 'x' })).statusCode).toBe(404); // l'opérateur voit tout
     expect((await e.call('POST', `/v1/admin/staff/${doc}/disable`, t1, { reason: 'ok' })).statusCode).toBe(200);
     expect((await e.call('POST', `/v1/admin/staff/${doc}/disable`, t1, { reason: 'encore' })).statusCode).toBe(409);
     // l'opérateur désactive un directeur

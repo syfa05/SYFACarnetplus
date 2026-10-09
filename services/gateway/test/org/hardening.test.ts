@@ -140,6 +140,7 @@ describe('revue L3 · rattrapage du fournisseur d\'identité', () => {
     expect(e.directory.users.get(doc)!.enabled).toBe(true);
     expect((await e.db.query('SELECT directory_sync FROM staff_member WHERE sub=$1', [doc])).rows[0]).toMatchObject({ directory_sync: 'disable' });
     expect((await e.call('POST', '/v1/admin/directory/reconcile', await e.tok(dir))).statusCode).toBe(403);
+    e.clock.advance(180); // temporisation du rattrapage
     expect((await e.call('POST', '/v1/admin/directory/reconcile', await e.tok('op-1'))).json()).toEqual({ done: 1, failed: 0 });
     expect(e.directory.users.get(doc)!.enabled).toBe(false);
     expect(e.directory.logouts).toContain(doc);
@@ -156,6 +157,7 @@ describe('revue L3 · rattrapage du fournisseur d\'identité', () => {
     const doc = await e.staff(dir, 'dr.a', est, [{ role: 'medecin' }]);
     e.directory.failNext = 'logout';
     expect((await e.call('POST', `/v1/admin/staff/${doc}/disable`, await e.tok(dir), { reason: 'x' })).json()).toEqual({ directory: 'pending' });
+    e.clock.advance(180);
     expect(await e.rt.org.reconcilePending()).toEqual({ done: 1, failed: 0 });
     expect(e.directory.logouts).toEqual([doc]);
   });
@@ -180,6 +182,7 @@ describe('revue L3 · rattrapage du fournisseur d\'identité', () => {
     expect((await e.call('POST', '/v1/admin/staff', await e.tok(dir), staffBody(est))).statusCode).toBe(502);
     const sub = [...e.directory.users.keys()].at(-1)!;
     expect(e.directory.users.get(sub)!.enabled).toBe(false);
+    e.clock.advance(180);
     await e.rt.org.reconcilePending();
     expect(e.directory.users.get(sub)!.enabled).toBe(true);
   });
@@ -384,5 +387,174 @@ describe('revue L3 (2e passe) · majeur B : rôles et rattachements ne se transf
     await e.db.query("UPDATE staff_member SET status='disabled' WHERE sub='op-1'");
     await bootstrapOperator(e.db, 'op-1', { reactivate: true });
     expect((await e.rt.staff.bySub('op-1'))!.status).toBe('active');
+  });
+});
+
+describe('revue L3 (3e passe) · mineurs : sondage d\'existence, curseur, rattrapage, purge, mot de passe', () => {
+  it('compte inconnu ou hors de portée : même 403 pour un non-opérateur sur les 5 routes ; l\'opérateur seul reçoit 404', async () => {
+    const { e, est, dir } = await world();
+    const b = await e.establishment('B-1');
+    const dirB = await e.staff('op-1', 'dir.b', b, [{ role: 'directeur_medical' }]);
+    const other = await e.staff(dirB, 'dr.b', b, [{ role: 'medecin' }]);
+    const t = await e.tok(dir);
+    const routes: Array<[string, string, unknown?]> = [
+      ['POST', 'disable', { reason: 'x' }], ['POST', 'activate'], ['POST', 'temporary-password'], ['POST', 'roles', { role: 'infirmier' }],
+    ];
+    for (const [method, tail, payload] of routes) {
+      const unknown = await e.call(method as 'POST', `/v1/admin/staff/inexistant-1/${tail}`, t, payload);
+      const foreign = await e.call(method as 'POST', `/v1/admin/staff/${other}/${tail}`, t, payload);
+      expect([unknown.statusCode, foreign.statusCode], tail).toEqual([403, 403]);
+      expect(unknown.json(), tail).toEqual(foreign.json());
+      expect((await e.call(method as 'POST', `/v1/admin/staff/inexistant-1/${tail}`, await e.tok('op-1'), payload)).statusCode, tail).toBe(404);
+    }
+    const roleId = (await e.rt.staff.bySub(other))!.roles[0]!.id;
+    const delUnknown = await e.call('DELETE', '/v1/admin/staff/inexistant-1/roles/11111111-1111-4111-8111-111111111111', t);
+    const delForeign = await e.call('DELETE', `/v1/admin/staff/${other}/roles/${roleId}`, t);
+    expect([delUnknown.statusCode, delForeign.statusCode]).toEqual([403, 403]);
+    // dans la portée, un rôle inexistant donne 404
+    const inf = await e.staff(dir, 'inf.a', est, [{ role: 'infirmier' }]);
+    expect((await e.call('DELETE', `/v1/admin/staff/${inf}/roles/11111111-1111-4111-8111-111111111111`, t)).statusCode).toBe(404);
+    expect((await e.db.query("SELECT count(*)::int AS n FROM access_denial WHERE reason='unknown_target'")).rows[0]!.n).toBeGreaterThan(0);
+  });
+
+  it('curseur de revues faux mais de bonne forme : 400, jamais 500', async () => {
+    const { e } = await world();
+    const op = await e.tok('op-1');
+    for (const c of ['2026-99-99T00:00:00.000Z|aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '2026-10-01T10:00:00.000Z|------------------------------------',
+      '2026-10-01T10:00:00.000Z|ffffffff-ffff-ffff-ffff-fffffffffffg', '2026-02-30T10:00:00.000Z|aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '2026-10-01T10:00:00Z|aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa']) {
+      expect((await e.call('GET', `/v1/admin/reviews?cursor=${encodeURIComponent(c)}`, op)).statusCode, c).toBe(400);
+    }
+    expect((await e.call('GET', '/v1/admin/reviews?cursor=2026-10-01T10:00:00.000Z%7Caaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', op)).statusCode).toBe(200);
+  });
+
+  it('plafond d\'examen : 5200 lignes non contrôlables n\'empêchent pas d\'atteindre une ligne plus ancienne (curseur de reprise)', async () => {
+    const { e } = await world();
+    const op = await e.tok('op-1');
+    const chief = await e.call('POST', '/v1/admin/staff', op, { username: 'chef.z', phone: '237690000045', district: 'Z-1', roles: [{ role: 'chef_district' }] });
+    expect(chief.statusCode).toBe(201);
+    await e.db.query(`INSERT INTO admin_action (id, at, actor_sub, actor_roles, action, district, review_required)
+                      SELECT gen_random_uuid(), '2026-10-02T00:00:00Z'::timestamptz + g * interval '1 second', 'dir-z', ARRAY['directeur_medical'], 'patient.merge', 'Z-1', true FROM generate_series(1, 5200) g`);
+    await e.db.query("INSERT INTO admin_action (id, at, actor_sub, actor_roles, action, review_required) VALUES (gen_random_uuid(), '2026-09-01T00:00:00Z', 'dir-y', ARRAY['directeur_medical'], 'patient.merge', true)");
+    const first = (await e.call('GET', '/v1/admin/reviews?limit=5', op)).json() as { items: unknown[]; next: string | null };
+    expect(first.items).toEqual([]); // 5000 lignes examinées sans trouver de ligne contrôlable : l'appel s'arrête au plafond
+    expect(first.next).not.toBeNull();
+    let cursor: string | null = null;
+    let found = 0, pages = 0;
+    do {
+      const r = await e.call('GET', `/v1/admin/reviews?limit=5${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, op);
+      const j = r.json() as { items: unknown[]; next: string | null };
+      found += j.items.length; cursor = j.next; pages++;
+    } while (cursor && pages < 10);
+    expect(found).toBe(1);
+    expect(pages).toBeGreaterThanOrEqual(2); // la première page s'arrête au plafond d'examen et rend un curseur
+  }, 60_000);
+
+  it('acteur sans droit de contrôle : liste vide sans examiner la table', async () => {
+    const { e, est, dir } = await world();
+    const sec = await e.staff(dir, 'sec.a', est, [{ role: 'secretaire' }]);
+    await e.db.query("INSERT INTO admin_action (id, at, actor_sub, actor_roles, action, review_required) VALUES (gen_random_uuid(), now(), 'dir-y', ARRAY['directeur_medical'], 'patient.merge', true)");
+    for (const sub of [sec, dir]) expect((await e.call('GET', '/v1/admin/reviews', await e.tok(sub))).json()).toEqual({ items: [], next: null });
+  });
+
+  it('rattrapage : un seul passage à la fois ; temporisation croissante ; un compte en échec permanent ne bloque pas les autres ; événements en échelle logarithmique', async () => {
+    const { e, est, dir } = await world();
+    const a = await e.staff(dir, 'dr.a', est, [{ role: 'medecin' }]);
+    const b = await e.staff(dir, 'dr.b', est, [{ role: 'medecin' }]);
+    await e.db.query("UPDATE staff_member SET directory_sync='enable', directory_attempts=3, directory_last_try=$2 WHERE sub=$1", [a, e.clock.now.toISOString()]); // en échec depuis peu
+    await e.db.query("UPDATE staff_member SET directory_sync='enable' WHERE sub=$1", [b]);
+    expect(await e.rt.org.reconcilePending()).toEqual({ done: 1, failed: 0 }); // a est en temporisation (8 min) : seul b est traité
+    // passages concurrents : un seul s'exécute
+    await e.db.query("UPDATE staff_member SET directory_sync='enable', directory_attempts=0, directory_last_try=NULL WHERE sub=$1", [b]);
+    const [r1, r2] = await Promise.all([e.rt.org.reconcilePending(), e.rt.org.reconcilePending()]);
+    expect(r1).toEqual(r2);
+    // échecs répétés : tentatives comptées, temporisation, événements seulement aux puissances de 2
+    e.directory.setEnabled = async () => { throw new DirectoryError('unavailable'); };
+    for (let i = 0; i < 9; i++) { e.clock.advance(3600 + 1); await e.rt.org.reconcilePending(); }
+    const row = (await e.db.query<{ directory_attempts: number }>('SELECT directory_attempts FROM staff_member WHERE sub=$1', [a])).rows[0]!;
+    expect(row.directory_attempts).toBeGreaterThanOrEqual(9);
+    const events = (await e.db.query<{ n: number }>("SELECT count(*)::int AS n FROM auth_event WHERE type='staff_directory_sync_failed' AND subject=$1", [a])).rows[0]!.n;
+    expect(events).toBeLessThanOrEqual(5); // 4, 8, 16... : pas un événement par minute
+    // immédiatement après un échec : temporisation
+    const before = (await e.db.query<{ directory_attempts: number }>('SELECT directory_attempts FROM staff_member WHERE sub=$1', [a])).rows[0]!.directory_attempts;
+    await e.rt.org.reconcilePending();
+    expect((await e.db.query<{ directory_attempts: number }>('SELECT directory_attempts FROM staff_member WHERE sub=$1', [a])).rows[0]!.directory_attempts).toBe(before);
+  });
+
+  it('purge : rétention minimale de 90 jours, imposée par la base ; le drapeau posé à la main n\'efface pas une ligne récente', async () => {
+    const { e, est, dir } = await world();
+    const sec = await e.staff(dir, 'sec.a', est, [{ role: 'secretaire' }]);
+    await e.call('POST', '/v1/admin/establishments', await e.tok(sec), { code: 'X-1', name: 'x' }); // ligne récente
+    await e.db.query("INSERT INTO access_denial (at, actor_kind, action, data, reason) VALUES (now() - interval '100 days','staff','C','summary','ancien'), (now() - interval '30 days','staff','C','summary','moyen')");
+    await expect(e.db.query("SELECT purge_access_denial(now() - interval '10 days')")).rejects.toThrow(/90 jours/);
+    await expect(e.db.query("SELECT purge_access_denial(now() + interval '10 years')")).rejects.toThrow(/90 jours/);
+    // drapeau forgé : ne supprime que ce qui a plus de 90 jours
+    await e.db.transaction(async (tx) => {
+      await tx.query("SELECT set_config('syfa.purge','on',true)");
+      await expect(tx.query("DELETE FROM access_denial WHERE reason='moyen'")).rejects.toThrow(/ajout seul/);
+    });
+    expect(await e.rt.org.purgeDenials(90)).toBe(1);
+    await expect(e.rt.org.purgeDenials(30)).rejects.toThrow(/90 jours/);
+    const left = (await e.db.query<{ reason: string }>("SELECT reason FROM access_denial WHERE reason IN ('ancien','moyen')")).rows.map((r) => r.reason);
+    expect(left).toEqual(['moyen']);
+  });
+
+  it('journal des refus : identifiants non conformes remplacés par NULL, texte long tronqué', async () => {
+    const { e } = await world();
+    await e.rt.access.check({ kind: 'professional', sub: 'x'.repeat(500), roles: [], sid: 's', clientClass: 'shared_pc', deviceId: null, lang: 'fr' }, null,
+      { patientId: 'pas-un-uuid', action: 'C', data: 'summary', context: {} });
+    const r = (await e.db.query<{ actor_sub: string; patient_id: string | null; establishment_id: string | null }>("SELECT actor_sub, patient_id, establishment_id FROM access_denial WHERE reason='no_staff_record' ORDER BY id DESC LIMIT 1")).rows[0]!;
+    expect(r.actor_sub).toHaveLength(128);
+    expect(r.patient_id).toBeNull();
+    await e.rt.access.check({ kind: 'professional', sub: 'u-y', roles: [], sid: 's', clientClass: 'shared_pc', deviceId: null, lang: 'fr' }, { id: 'i', sub: 'u-y', establishmentId: 'pas-un-uuid', district: null, status: 'active', roles: [], allowedNetworks: [] },
+      { patientId: '11111111-1111-4111-8111-111111111111', action: 'C', data: 'summary', context: {} });
+    const r2 = (await e.db.query<{ patient_id: string | null; establishment_id: string | null }>("SELECT patient_id, establishment_id FROM access_denial WHERE actor_sub='u-y' ORDER BY id DESC LIMIT 1")).rows[0]!;
+    expect(r2).toEqual({ patient_id: '11111111-1111-4111-8111-111111111111', establishment_id: null });
+  });
+
+  it('réinitialisation du mot de passe par un directeur : soumise au contrôle du niveau supérieur', async () => {
+    const { e, est, dir } = await world();
+    const doc = await e.staff(dir, 'dr.a', est, [{ role: 'medecin' }]);
+    const pending = async () => ((await e.call('GET', '/v1/admin/reviews', await e.tok('op-1'))).json() as { items: Array<{ action: string }> }).items.map((x) => x.action);
+    expect(await pending()).not.toContain('account.password_reset');
+    await e.call('POST', `/v1/admin/staff/${doc}/temporary-password`, await e.tok(dir));
+    expect(await pending()).toContain('account.password_reset');
+    // une réinitialisation par l'opérateur n'est pas à contrôler (il n'a pas de niveau supérieur défini)
+    const before = (await pending()).length;
+    await e.call('POST', `/v1/admin/staff/${doc}/temporary-password`, await e.tok('op-1'));
+    expect((await pending()).length).toBe(before);
+  });
+});
+
+describe('revue L3 (3e passe) · tests qui ne discriminaient pas (mutations survivantes de la 2e passe)', () => {
+  it('adaptateur : une redirection n\'est pas suivie (le serveur visé n\'est jamais contacté)', async () => {
+    const hits: string[] = [];
+    const target = createServer((req, res) => { hits.push(req.url!); res.writeHead(200); res.end('{}'); });
+    await new Promise<void>((ok) => target.listen(0, '127.0.0.1', ok));
+    servers.push(target);
+    const targetUrl = `http://127.0.0.1:${(target.address() as AddressInfo).port}`;
+    const front = createServer((req, res) => {
+      req.resume();
+      if (req.url!.endsWith('/token')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ access_token: 't', expires_in: 300 })); return; }
+      res.writeHead(307, { location: `${targetUrl}/pwned` }); res.end();
+    });
+    await new Promise<void>((ok) => front.listen(0, '127.0.0.1', ok));
+    servers.push(front);
+    const d = new KeycloakDirectory(`http://127.0.0.1:${(front.address() as AddressInfo).port}`, 'syfa', 'c', 's');
+    await expect(d.logout('u1234567')).rejects.toBeInstanceOf(DirectoryError);
+    await expect(d.deleteUser('u1234567')).rejects.toBeInstanceOf(DirectoryError);
+    expect(hits).toEqual([]);
+  });
+  it('adaptateur : identifiant renvoyé par la création invalide → indisponible (jamais utilisé dans un chemin)', async () => {
+    for (const location of ['http://x/admin/realms/syfa/users/..%2f..%2fadmin', 'http://x/users/ab', 'http://x/users/a b c d e f g h', 'http://x/users/', '']) {
+      const server = createServer((req, res) => {
+        req.resume();
+        if (req.url!.endsWith('/token')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ access_token: 't', expires_in: 300 })); return; }
+        res.writeHead(201, location ? { location } : {}); res.end();
+      });
+      await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
+      servers.push(server);
+      const d = new KeycloakDirectory(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, 'syfa', 'c', 's');
+      await expect(d.createUser({ username: 'x', phone: '1', temporaryPassword: 'p' }), location).rejects.toMatchObject({ code: 'unavailable' });
+    }
   });
 });

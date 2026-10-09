@@ -48,7 +48,7 @@ const ADMIN: Record<AdminAction, Partial<Record<StaffRole, Rule>>> = {
 };
 
 /** Actions du directeur médical soumises au contrôle du niveau supérieur (onglet 2.3, dernier paragraphe). */
-export const CONTROLLED_BY_UPPER_LEVEL: readonly string[] = ['account.create', 'role.assign', 'patient.merge', 'death.cancel', 'emergency.access'];
+export const CONTROLLED_BY_UPPER_LEVEL: readonly string[] = ['account.create', 'account.password_reset', 'role.assign', 'patient.merge', 'death.cancel', 'emergency.access'];
 
 export interface AdminTarget {
   establishmentId?: string | null;

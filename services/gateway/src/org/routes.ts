@@ -66,7 +66,6 @@ export function orgRoutes(app: FastifyInstance, rt: AuthRuntime): void {
     async (req) => {
       const q = req.query as { limit?: string; cursor?: string };
       const limit = q.limit === undefined ? undefined : Number(q.limit);
-      if (limit !== undefined && (limit < 1 || limit > 100)) throw new AuthError('validation', 400);
       return rt.org.pendingReviews(me(req), { limit, cursor: q.cursor });
     });
 

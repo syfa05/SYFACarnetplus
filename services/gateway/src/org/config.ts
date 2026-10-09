@@ -9,6 +9,12 @@ export interface OrgConfig {
   minNetworkPrefix: { v4: number; v6: number };
   /** Refus d'accès journalisés au plus N fois par acteur, motif et fenêtre (anti-remplissage). */
   denialLog: { perWindow: number; windowSeconds: number };
+  /** Rattrapage de l'annuaire : période de la tâche et nombre de comptes par passage. */
+  reconcile: { intervalSeconds: number; batch: number };
+  /** Contrôles : taille maximale d'une page et lignes examinées au plus par appel. */
+  reviews: { pageMax: number; maxScan: number };
+  /** Rétention du journal des refus, en jours (plancher de 90, imposé aussi par la base). */
+  denialRetentionDays: number;
 }
 
 /** Règles d'autorisation paramétrables (principe 9) : aucun délai codé en dur dans un service. */
@@ -20,6 +26,9 @@ export function loadOrgConfig(env: NodeJS.ProcessEnv = process.env): OrgConfig {
     },
     minNetworkPrefix: { v4: parseIntStrict(env, 'ORG_MIN_NETWORK_PREFIX_V4', 8, 1), v6: parseIntStrict(env, 'ORG_MIN_NETWORK_PREFIX_V6', 32, 1) },
     denialLog: { perWindow: parseIntStrict(env, 'ORG_DENIAL_LOG_PER_WINDOW', 5, 1), windowSeconds: parseIntStrict(env, 'ORG_DENIAL_LOG_WINDOW_SECONDS', 60, 1) },
+    reconcile: { intervalSeconds: parseIntStrict(env, 'ORG_RECONCILE_INTERVAL_SECONDS', 60, 5), batch: parseIntStrict(env, 'ORG_RECONCILE_BATCH', 200, 1) },
+    reviews: { pageMax: parseIntStrict(env, 'ORG_REVIEWS_PAGE_MAX', 100, 1), maxScan: parseIntStrict(env, 'ORG_REVIEWS_MAX_SCAN', 5000, 1) },
+    denialRetentionDays: parseIntStrict(env, 'ORG_DENIAL_RETENTION_DAYS', 90, 90),
     homologatedClients: (env.ORG_HOMOLOGATED_CLIENTS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   };
 }

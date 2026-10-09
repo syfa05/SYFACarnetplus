@@ -42,4 +42,9 @@ const app = buildApp(config, rt);
 await app.listen({ port: config.port, host: '0.0.0.0' });
 
 // Rattrapage périodique des écarts avec le fournisseur d'identité (activation / désactivation distante échouée).
-setInterval(() => { rt.org.reconcilePending().catch(() => {}); }, 60_000).unref();
+setInterval(() => { rt.org.reconcilePending().catch(() => {}); }, org.reconcile.intervalSeconds * 1000).unref();
+// Purges quotidiennes : fenêtres de limitation échues et journal des refus au-delà de la rétention.
+setInterval(() => {
+  rt.limiter.purge().catch(() => {});
+  rt.org.purgeDenials(org.denialRetentionDays).catch(() => {});
+}, 86_400_000).unref();

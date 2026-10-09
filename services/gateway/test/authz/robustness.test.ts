@@ -171,3 +171,21 @@ describe('revue L3 (2e passe) · types stricts : une valeur « presque juste » 
     expect(decideAdmin({ actor: op, action: 'supervision.review', context: { entry: { ...e, actorRoles: 'x' as never } } })).toMatchObject({ reason: 'invalid_input' });
   });
 });
+
+describe('revue L3 (3e passe) · couverture des contrôles de forme et des rôles hérités', () => {
+  it('rôle nommé comme une propriété d\'objet, AVEC un service : toujours sans droit (le service ne masque plus le test)', () => {
+    for (const role of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+      const actor: Actor = { kind: 'staff', sub: 'u', active: true, establishmentId: EST, roles: [{ role: role as StaffRole, serviceId: 's1' }] };
+      for (const action of ['card.issue', 'account.create', 'journal.read', 'patient.merge', 'role.assign', 'card.block'] as const) {
+        expect(decideAdmin({ actor, action, target: { establishmentId: EST, serviceId: 's1', staffSub: 'x', roles: ['medecin'] } }).allow, `${role}/${action}`).toBe(false);
+      }
+      expect(decide(req(actor, 'summary', 'C')).allow, role).toBe(false);
+    }
+  });
+  it('épisode : identifiant d\'établissement de mauvais type ou absent → refus de forme', () => {
+    const ok = req(staff('medecin'), 'summary', 'C');
+    for (const establishmentId of [7, null, undefined, '', {}]) {
+      invalid({ ...ok, context: { ...ok.context, episode: { ...openEpisode(), establishmentId } } });
+    }
+  });
+});
