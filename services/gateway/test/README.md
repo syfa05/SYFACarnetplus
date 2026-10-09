@@ -31,6 +31,15 @@ Un fichier par thème ; l'identifiant de l'exigence (F-AUTH-01, F-ID-03…) ou d
 | `hardening.test.ts` | Corrections de la revue L3 : rôles en double, compensation, comptes nationaux et contraintes SQL, journal des refus limité et purge, rattrapage de l'annuaire, pagination des contrôles, adaptateur (401, redirection, identifiants) |
 | `directory.test.ts` | Adaptateur Keycloak contre un serveur HTTP **simulé**, configuration |
 
+## Cartes santé (`cards/`) — lot L4
+| Fichier | Contenu |
+|---|---|
+| `codes.test.ts` | QR « CS1: » 128 bits, **10 millions de tirages sans collision**, code de secours (alphabet, contrôle : toute faute et toute inversion détectées), empreintes, contrôle hors ligne |
+| `lifecycle.test.ts` | **F-CARTE-01** (carte non activée n'ouvre rien), **F-CARTE-02** (blocage en ligne, hors ligne après synchronisation, liste incrémentale), une seule carte active, temporaire → définitive, perte (P9), contraintes SQL, échéance de 90 jours, collisions de codes |
+| `print.test.ts` | Gabarits PDF (ID-1, bilingues, couleurs, contenu imprimé exact), PDF valide avec police embarquée, impression par l'API et ses refus |
+| `reserve.test.ts` | Réserves de codes par appareil, rattachement hors ligne (actif / émis, idempotent), annulation à la perte de l'appareil par tous les chemins |
+| `access.test.ts` | Qui émet, active, bloque (matrice 2.3), aucune fuite des secrets, carte numérique du titulaire, SMS neutres, validation |
+
 ## Identité (`identity/`)
 | Fichier | Contenu |
 |---|---|

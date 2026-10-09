@@ -9,6 +9,7 @@ import type { NetworkPolicy } from './network.js';
 import type { PatientTokens } from './tokens.js';
 import type { KeyResolver } from './principal.js';
 import type { AccessGuard } from '../authz/guard.js';
+import type { CardService } from '../cards/service.js';
 import type { OrgService } from '../org/service.js';
 import type { StaffRepository } from '../org/repository.js';
 
@@ -26,5 +27,6 @@ export interface AuthRuntime {
   db: Db;
   staff: StaffRepository;
   org: OrgService;
+  cards: CardService;
   access: AccessGuard;
 }

@@ -11,6 +11,7 @@ import { pgDb } from './db/pg.js';
 import { loadIdentityConfig } from './identity/config.js';
 import { FieldCrypto } from './identity/crypto.js';
 import { IdentityService } from './identity/service.js';
+import { loadCardsConfig } from './cards/config.js';
 import { loadDirectory, loadOrgConfig } from './org/config.js';
 
 const need = (v: string | undefined, name: string): string => {
@@ -23,14 +24,18 @@ const db = pgDb(new pg.Pool({ connectionString: need(config.databaseUrl, 'DATABA
 if (config.autoMigrate) await migrate(db, config.migrationsDir);
 
 const org = loadOrgConfig();
+const cards = loadCardsConfig();
+const fieldCrypto = FieldCrypto.fromEnv();
 const rt = createAuthRuntime({
   directory: loadDirectory(config.oidcIssuer),
+  fieldCrypto,
+  cards,
   engine: org.engine,
   org,
   homologatedClients: org.homologatedClients,
   auth: loadAuthConfig(),
   db,
-  identity: new IdentityService(db, loadIdentityConfig(), FieldCrypto.fromEnv()),
+  identity: new IdentityService(db, loadIdentityConfig(), fieldCrypto),
   crypto: AuthCrypto.fromEnv(),
   sms: new HttpSmsSender(need(config.smsUrl, 'SMS_URL')),
   i18n: new Translator(config.i18nDir),
@@ -48,3 +53,5 @@ setInterval(() => {
   rt.limiter.purge().catch(() => {});
   rt.org.purgeDenials(org.denialRetentionDays).catch(() => {});
 }, 86_400_000).unref();
+// Balayage des cartes émises mais non activées dans le délai (révocation automatique).
+setInterval(() => { rt.cards.sweepExpired().catch(() => {}); }, cards.sweepIntervalMinutes * 60_000).unref();

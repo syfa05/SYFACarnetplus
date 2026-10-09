@@ -27,6 +27,10 @@ export class Translator {
   constructor(dir: string) {
     for (const lang of ['fr', 'en']) this.dicts[lang] = JSON.parse(readFileSync(join(dir, `${lang}.json`), 'utf8'));
   }
+  /** Dictionnaire complet d'une langue (gabarits bilingues des cartes). */
+  dict(lang: 'fr' | 'en'): Record<string, string> {
+    return this.dicts[lang]!;
+  }
   t(lang: string, key: string, vars: Record<string, string | number> = {}): string {
     const raw = this.dicts[lang]?.[key] ?? this.dicts.fr?.[key];
     if (raw === undefined) throw new Error(`clé i18n absente : ${key}`);

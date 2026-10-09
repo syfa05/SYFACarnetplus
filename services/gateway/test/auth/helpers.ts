@@ -13,6 +13,7 @@ import { loadConfig } from '../../src/config.js';
 import { loadIdentityConfig } from '../../src/identity/config.js';
 import { IdentityService } from '../../src/identity/service.js';
 import type { PatientInput } from '../../src/identity/types.js';
+import type { FieldCrypto } from '../../src/identity/crypto.js';
 import { base, makeDb, testCrypto } from '../identity/helpers.js';
 
 export { cleanup } from '../identity/helpers.js';
@@ -88,6 +89,7 @@ export interface Env {
   identity: IdentityService;
   sms: FakeSms;
   directory: FakeDirectory;
+  fieldCrypto: FieldCrypto;
   clock: { now: Date; advance(seconds: number): void };
   authConfig: AuthConfig;
   signPro(over?: Record<string, unknown>, opts?: { alg?: string; kid?: string }): Promise<string>;
@@ -102,7 +104,8 @@ export async function makeEnv(authEnv: NodeJS.ProcessEnv = {}): Promise<Env> {
   const clock = { now: new Date('2026-10-06T10:00:00Z'), advance(s: number) { this.now = new Date(this.now.getTime() + s * 1000); } };
   const now = () => clock.now;
   const authConfig = loadAuthConfig({ AUTH_SYSTEM_CLIENTS: 'syfa-system', ...authEnv });
-  const identity = new IdentityService(db, loadIdentityConfig({}), testCrypto(), undefined, now);
+  const fieldCrypto = testCrypto();
+  const identity = new IdentityService(db, loadIdentityConfig({}), fieldCrypto, undefined, now);
   const sms = new FakeSms();
   const directory = new FakeDirectory();
   const kc = await generateKeyPair('RS256');
@@ -110,13 +113,14 @@ export async function makeEnv(authEnv: NodeJS.ProcessEnv = {}): Promise<Env> {
   const rt = createAuthRuntime({
     auth: authConfig, db, identity, crypto: new AuthCrypto(generateAuthKey()), sms,
     i18n: new Translator(fileURLToPath(new URL('../../../../i18n', import.meta.url))),
-    keycloakKey: kc.publicKey, now, directory,
+    keycloakKey: kc.publicKey, now, directory, fieldCrypto,
+    cards: { activationDeadlineDays: 90, reserveMax: 20, assistanceNumber: '8123', revocationPageMax: 1000, sweepIntervalMinutes: 60 },
     patientPrivateKeyPem: ec.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   });
   const app = buildApp(loadConfig({ OIDC_ISSUER: ISSUER, OIDC_AUDIENCE: AUDIENCE }), rt);
   let n = 0;
   return {
-    app, rt, db, identity, sms, directory, clock, authConfig,
+    app, rt, db, identity, sms, directory, fieldCrypto, clock, authConfig,
     async signPro(over = {}, opts = {}) {
       const claims = { azp: 'syfa-web', sid: 'sid-1', amr: ['pwd', 'otp'], realm_access: { roles: ['medecin'] }, ...over } as Record<string, unknown>;
       let jwt = new SignJWT(claims).setProtectedHeader({ alg: opts.alg ?? 'RS256' })

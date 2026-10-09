@@ -1,4 +1,8 @@
 import { AccessGuard } from '../authz/guard.js';
+import { CardService } from '../cards/service.js';
+import { loadCardsConfig, type CardsConfig } from '../cards/config.js';
+import type { FieldCrypto } from '../identity/crypto.js';
+import { adminGate } from '../org/gate.js';
 import { DenialLog } from '../authz/denial.js';
 import { loadOrgConfig, type OrgConfig } from '../org/config.js';
 import type { EngineConfig } from '../authz/types.js';
@@ -31,6 +35,9 @@ export interface AuthRuntimeOptions {
   patientPrivateKeyPem: string;
   directory: DirectoryPort;
   engine?: EngineConfig;
+  /** Clés de la base identité (chiffrement des identifiants de carte). */
+  fieldCrypto: FieldCrypto;
+  cards?: CardsConfig;
   /** Réglages de l'organisation ; valeurs par défaut sinon. */
   org?: Pick<OrgConfig, 'minNetworkPrefix' | 'denialLog' | 'reconcile' | 'reviews'>;
   /** Clients « système » homologués (export FHIR, onglet 2.5). */
@@ -54,6 +61,7 @@ export function createAuthRuntime(o: AuthRuntimeOptions): AuthRuntime {
     sessions,
     db: o.db,
     staff,
+    cards: new CardService(o.db, o.fieldCrypto, o.identity, o.sms, o.i18n, adminGate(denials), o.cards ?? loadCardsConfig({}), now),
     org: new OrgService(o.db, staff, o.directory, sessions, events, denials, orgCfg, now),
     access: new AccessGuard(denials, now, o.engine, o.homologatedClients),
     limiter,

@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { AuthError } from './auth/errors.js';
 import { authHook } from './auth/hook.js';
 import { patientAuthRoutes, rateLimitHook, sessionRoutes } from './auth/routes.js';
+import { cardRoutes } from './cards/routes.js';
 import { orgRoutes } from './org/routes.js';
 import type { AuthRuntime } from './auth/runtime.js';
 import type { Config } from './config.js';
@@ -46,6 +47,7 @@ export function buildApp(config: Config, rt: AuthRuntime, extend?: (secured: Fas
     secured.addHook('onRequest', authHook(config, rt));
     sessionRoutes(secured, rt, config);
     orgRoutes(secured, rt);
+    cardRoutes(secured, rt);
     extend?.(secured);
     secured.get('/v1/me', async (req) => ({
       subject: req.subject, roles: req.roles, kind: req.principal?.kind,
